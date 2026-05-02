@@ -9,7 +9,7 @@ import { extractSelectedOrStatement } from "../utils/sql";
 export function Toolbar() {
   const { activeConnectionId, connections, statusById, listDatabases, setDatabase, connect, disconnect } = useConnectionStore();
   const { tabs, activeTabId, selection } = useEditorStore();
-  const { runningById, runQuery } = useQueryStore();
+  const { runningById, runQuery, cancelQuery } = useQueryStore();
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const activeConn = connections.find((c) => c.id === activeConnectionId) ?? null;
   const status = activeConn ? (statusById[activeConn.id] ?? "disconnected") : "disconnected";
@@ -80,6 +80,21 @@ export function Toolbar() {
           <PlayCircle className="size-4" />
           Run All
         </Button>
+        {running ? (
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() => {
+              if (!activeConnectionId) return;
+              cancelQuery(activeConnectionId);
+            }}
+          >
+            <svg className="size-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 6h2v12H6zm5 0h2v12h-2zm5 0h2v12h-2z" />
+            </svg>
+            Cancel
+          </Button>
+        ) : null}
       </div>
       <div className="ml-2 flex items-center gap-2 text-xs text-zinc-400">
         <span className="rounded-md border border-white/10 bg-white/5 px-2 py-1">{activeConn ? `${activeConn.db_type} · ${activeConn.host}:${activeConn.port}` : "No connection"}</span>

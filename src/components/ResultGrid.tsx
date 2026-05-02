@@ -89,6 +89,7 @@ export function ResultGrid() {
   );
   const { activeConnectionId } = useConnectionStore();
   const { tabs, activeTabId } = useEditorStore();
+  const cancelQuery = useQueryStore((s) => s.cancelQuery);
   const [editing, setEditing] = useState<{ key: string; col: string } | null>(
     null,
   );
@@ -242,13 +243,10 @@ export function ResultGrid() {
 
   return (
     <>
-      <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[color:var(--result-bg)]">
+      <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[color:var(--result-bg)]">
         <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-2">
           <div className="flex items-center gap-3">
             <div className="text-xs text-zinc-400">Results</div>
-            {running ? (
-              <div className="text-xs text-zinc-500">Running…</div>
-            ) : null}
           </div>
 
           <div className="flex items-center gap-2 text-xs text-zinc-400">
@@ -273,7 +271,35 @@ export function ResultGrid() {
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-hidden">
+        {running && !error ? (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[color:var(--result-bg)]/90 backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-4">
+              <div className="flex items-center gap-3">
+                <svg className="size-5 animate-spin text-sky-400" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span className="text-sm font-medium text-zinc-300">
+                  Running query...
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  if (!activeConnectionId) return;
+                  cancelQuery(activeConnectionId);
+                }}
+                className="flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/15 px-5 py-2.5 text-sm font-semibold text-red-300 transition hover:bg-red-500/25 hover:border-red-500/60 active:scale-95"
+              >
+                <svg className="size-4" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 6h2v12H6zm5 0h2v12h-2zm5 0h2v12h-2z" />
+                </svg>
+                Cancel Query
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="relative min-h-0 flex-1 overflow-hidden">
           <div className="flex h-full min-h-0 overflow-hidden">
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <div
