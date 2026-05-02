@@ -1,4 +1,4 @@
-![QueryPlus](https://raw.githubusercontent.com/thongbbc/queryplus/master/assets/logo-mark.svg)
+![QueryPlus](./src-tauri/icons/128x128.png)
 
 # QueryPlus
 
