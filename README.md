@@ -1,6 +1,8 @@
+![QueryPlus](https://raw.githubusercontent.com/thongbbc/queryplus/master/assets/logo-mark.svg)
+
 # QueryPlus
 
-QueryPlus is a cross-platform desktop app (Tauri v2) for managing database connections and running SQL.
+Cross-platform SQL client built with Tauri v2 (Rust) + React.
 
 ## Prerequisites
 
