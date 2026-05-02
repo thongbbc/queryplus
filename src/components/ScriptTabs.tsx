@@ -1,5 +1,5 @@
 import { FolderOpen, Plus, Save, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useEditorStore } from "../stores/editorStore";
 import { invokeJson } from "../lib/invoke";
@@ -63,6 +63,58 @@ export function ScriptTabs() {
   const activeSavedFileName = (activeTab?.isSaved ? activeTab?.fileName : undefined) ?? undefined;
   const canDeleteActive = !!activeSavedFileName && !!activeTab?.connectionId && !saving;
 
+  const saveActiveScript = useCallback(async () => {
+    if (!activeConnectionId) return;
+    if (!activeTab) return;
+    if (saving) return;
+
+    const existing = (activeTab.fileName ?? "").trim();
+    const suggestedBase = (existing || `${activeTab.name}.sql`).trim();
+    const suggested = suggestedBase.toLowerCase().endsWith(".sql") ? suggestedBase : `${suggestedBase}.sql`;
+
+    const nameInput = existing
+      ? suggested
+      : await useDialogStore.getState().prompt({
+          title: "Save Script",
+          message: "Script name (.sql):",
+          defaultValue: suggested,
+          label: "File name",
+          placeholder: "example.sql",
+          confirmText: "Save",
+          cancelText: "Cancel",
+        });
+    if (!nameInput) return;
+    const name = nameInput.toLowerCase().endsWith(".sql") ? nameInput : `${nameInput}.sql`;
+
+    setSaving(true);
+    try {
+      await invokeJson<void>("save_script", { connectionId: activeConnectionId, name, content: activeTab.content ?? "" });
+      markSaved(activeTab.id, name, activeConnectionId, activeConn?.database ?? "");
+      renameTab(activeTab.id, stripSqlExt(name));
+      const items = await invokeJson<{ name: string }[]>("list_scripts", { connectionId: activeConnectionId });
+      setScriptItems(items.map((s) => s.name));
+      setOpenSelectedScript(name);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await useDialogStore.getState().alert({ title: "Save failed", message: msg });
+    } finally {
+      setSaving(false);
+    }
+  }, [activeConnectionId, activeConn?.database, activeTab, markSaved, renameTab, saving]);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const key = e.key.toLowerCase();
+      const isSave = (e.ctrlKey || e.metaKey) && key === "s";
+      if (!isSave) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void saveActiveScript();
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [saveActiveScript]);
+
   return (
     <div className="border-b border-white/10 bg-[color:var(--editor-bg)] px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -86,43 +138,7 @@ export function ScriptTabs() {
             size="sm"
             variant="ghost"
             disabled={!canSave}
-            onClick={async () => {
-              if (!activeConnectionId) return;
-              if (!activeTab) return;
-
-              const existing = (activeTab.fileName ?? "").trim();
-              const suggestedBase = (existing || `${activeTab.name}.sql`).trim();
-              const suggested = suggestedBase.toLowerCase().endsWith(".sql") ? suggestedBase : `${suggestedBase}.sql`;
-
-              const nameInput = existing
-                ? suggested
-                : await useDialogStore.getState().prompt({
-                    title: "Save Script",
-                    message: "Script name (.sql):",
-                    defaultValue: suggested,
-                    label: "File name",
-                    placeholder: "example.sql",
-                    confirmText: "Save",
-                    cancelText: "Cancel",
-                  });
-              if (!nameInput) return;
-              const name = nameInput.toLowerCase().endsWith(".sql") ? nameInput : `${nameInput}.sql`;
-
-              setSaving(true);
-              try {
-                await invokeJson<void>("save_script", { connectionId: activeConnectionId, name, content: activeTab.content ?? "" });
-                markSaved(activeTab.id, name, activeConnectionId, activeConn?.database ?? "");
-                renameTab(activeTab.id, stripSqlExt(name));
-                const items = await invokeJson<{ name: string }[]>("list_scripts", { connectionId: activeConnectionId });
-                setScriptItems(items.map((s) => s.name));
-                setOpenSelectedScript(name);
-              } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                await useDialogStore.getState().alert({ title: "Save failed", message: msg });
-              } finally {
-                setSaving(false);
-              }
-            }}
+            onClick={saveActiveScript}
             title={activeTab?.fileName ? `Save ${activeTab.fileName}` : "Save script"}
           >
             <Save className="size-4" />

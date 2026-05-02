@@ -10,7 +10,6 @@ import type {
   RowKey,
   RowUpdate,
 } from "../types/query";
-import { ensureLimitOffset } from "../utils/sql";
 
 type DirtyState = {
   inserts: { id: string; values: Record<string, JsonValue> }[];
@@ -40,7 +39,7 @@ type QueryState = {
   removeInsertRow: (connectionId: string, insertId: string) => void;
 
   runQuery: (input: { connectionId: string; query: string }) => Promise<void>;
-  cancelQuery: (connectionId: string) => void;
+  cancelQuery: (connectionId: string) => Promise<void>;
   applySave: (input: { connectionId: string }) => Promise<ApplyChangesResult>;
 };
 
