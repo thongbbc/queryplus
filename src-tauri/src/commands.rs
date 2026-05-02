@@ -68,7 +68,9 @@ where
         match tokio::time::timeout(
             std::time::Duration::from_secs(QUERY_TIMEOUT_SECS),
             f(pool),
-        ) {
+        )
+        .await
+        {
             Ok(Ok(v)) => return Ok(v),
             Ok(Err(e)) => {
                 if !is_connection_error(&e) || attempt >= 3 {
@@ -111,7 +113,9 @@ where
         match tokio::time::timeout(
             std::time::Duration::from_secs(QUERY_TIMEOUT_SECS),
             f(pool),
-        ) {
+        )
+        .await
+        {
             Ok(Ok(v)) => return Ok(v),
             Ok(Err(e)) => {
                 if !is_connection_error(&e) || attempt >= 3 {
