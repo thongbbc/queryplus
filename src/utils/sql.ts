@@ -21,8 +21,16 @@ export function ensureLimitOffset(sql: string, fallback: { limit: number; offset
 export function rewriteLimitOffset(sql: string, next: { limit: number; offset: number }): string {
   const hasLimit = /\blimit\s+\d+/i.test(sql);
   if (!hasLimit) return ensureLimitOffset(sql, next);
-  const replaced = sql.replace(/\blimit\s+\d+(?:\s+offset\s+\d+)?/i, `LIMIT ${next.limit} OFFSET ${next.offset}`);
-  return replaced;
+  const re = /\blimit\s+\d+(?:\s+offset\s+\d+)?/gi;
+  let lastIndex = -1;
+  let lastLen = 0;
+  let m: RegExpExecArray | null = null;
+  while ((m = re.exec(sql)) !== null) {
+    lastIndex = m.index;
+    lastLen = m[0].length;
+  }
+  if (lastIndex < 0) return ensureLimitOffset(sql, next);
+  return `${sql.slice(0, lastIndex)}LIMIT ${next.limit} OFFSET ${next.offset}${sql.slice(lastIndex + lastLen)}`;
 }
 
 export function extractSelectedOrStatement(sqlText: string, sel: { from: number; to: number } | null): string {

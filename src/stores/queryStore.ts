@@ -24,6 +24,7 @@ type QueryState = {
   error: string | null;
   lastQuery: string;
   result: QueryResult | null;
+  runSeq: number;
   dirty: DirtyState;
 
   clearDirty: () => void;
@@ -54,6 +55,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   error: null,
   lastQuery: "",
   result: null,
+  runSeq: 0,
   dirty: { inserts: [], updatesByKey: {}, deletesByKey: {}, selectedKeys: {} },
 
   clearDirty: () => set({ dirty: { inserts: [], updatesByKey: {}, deletesByKey: {}, selectedKeys: {} } }),
@@ -126,13 +128,16 @@ export const useQueryStore = create<QueryState>((set, get) => ({
 
   runQuery: async ({ connectionId, query }) => {
     const normalized = ensureLimitOffset(query, { limit: 100, offset: 0 });
-    set({ running: true, error: null, lastQuery: normalized });
+    const seq = get().runSeq + 1;
+    set({ running: true, error: null, lastQuery: normalized, result: null, runSeq: seq });
     try {
       const result = await invokeJson<QueryResult>("execute_query", { connectionId, query: normalized });
+      if (get().runSeq !== seq) return;
       set({ result, running: false });
       get().clearDirty();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      if (get().runSeq !== seq) return;
       set({ running: false, error: message });
       throw e;
     }

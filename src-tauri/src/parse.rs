@@ -44,7 +44,11 @@ pub fn parse_select(sql: &str) -> SelectMeta {
 
     let mut table = None;
     let mut schema = None;
-    if let Some(pos) = lower.find(" from ") {
+    let from_pos = lower
+        .rfind(" from ")
+        .or_else(|| lower.rfind("\nfrom "))
+        .or_else(|| lower.rfind("\tfrom "));
+    if let Some(pos) = from_pos {
         let after = &s[pos + 6..];
         let token = after
             .trim_start()

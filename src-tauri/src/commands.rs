@@ -446,7 +446,7 @@ async fn compute_editability_and_total(
         enabled: false,
         reason_disabled: None,
         database,
-        schema: meta.schema.clone().or(Some("public".into())),
+        schema: meta.schema.clone(),
         table: meta.table.clone(),
         primary_key_columns: None,
     };
@@ -465,7 +465,14 @@ async fn compute_editability_and_total(
             return (editable, total_records);
         }
     };
-    let schema = meta.schema.clone().unwrap_or_else(|| "public".into());
+    let schema = if let Some(s) = meta.schema.clone() {
+        s
+    } else {
+        resolve_schema_pg(pool, table)
+            .await
+            .unwrap_or_else(|| "public".into())
+    };
+    editable.schema = Some(schema.clone());
 
     if let Ok(pk) = primary_key_pg(pool, &schema, table).await {
         if pk.is_empty() {
@@ -566,6 +573,14 @@ async fn primary_key_pg(pool: &sqlx::PgPool, schema: &str, table: &str) -> Resul
     .bind(table)
     .fetch_all(pool)
     .await
+}
+
+async fn resolve_schema_pg(pool: &sqlx::PgPool, table: &str) -> Option<String> {
+    let q = "SELECT n.nspname
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.oid = to_regclass($1)";
+    sqlx::query_scalar::<_, String>(q).bind(table).fetch_optional(pool).await.ok().flatten()
 }
 
 async fn primary_key_mysql(pool: &sqlx::MySqlPool, schema: &str, table: &str) -> Result<Vec<String>, sqlx::Error> {
@@ -697,6 +712,18 @@ pub async fn apply_changes(state: State<'_, AppState>, input: ApplyChangesInput)
                 }
             })
             .await?;
+            if !input.updates.is_empty() && inserted.1 == 0 {
+                return Err(format!(
+                    "UPDATE affected 0 rows. Check table/schema detection (target: {}.{}).",
+                    schema, input.table
+                ));
+            }
+            if !input.deletes.is_empty() && inserted.2 == 0 {
+                return Err(format!(
+                    "DELETE affected 0 rows. Check table/schema detection (target: {}.{}).",
+                    schema, input.table
+                ));
+            }
 
             Ok(ApplyChangesResult {
                 inserted_count: inserted.0,
@@ -786,6 +813,18 @@ pub async fn apply_changes(state: State<'_, AppState>, input: ApplyChangesInput)
                 }
             })
             .await?;
+            if !input.updates.is_empty() && inserted.1 == 0 {
+                return Err(format!(
+                    "UPDATE affected 0 rows. Check table/schema detection (target: {}.{}).",
+                    schema, input.table
+                ));
+            }
+            if !input.deletes.is_empty() && inserted.2 == 0 {
+                return Err(format!(
+                    "DELETE affected 0 rows. Check table/schema detection (target: {}.{}).",
+                    schema, input.table
+                ));
+            }
 
             Ok(ApplyChangesResult {
                 inserted_count: inserted.0,

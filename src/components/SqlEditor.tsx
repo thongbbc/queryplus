@@ -98,7 +98,7 @@ export function SqlEditor() {
   }, [activeConnectionId, canRun, runQuery]);
 
   return (
-    <div className="flex h-[44%] min-h-[240px] flex-col border-b border-white/10 bg-[color:var(--editor-bg)]">
+    <div className="flex min-h-0 flex-col bg-[color:var(--editor-bg)]">
       <div className="flex items-center justify-between gap-3 px-4 py-2">
         <div className="text-xs text-zinc-400">SQL Editor</div>
         <div className="text-xs text-zinc-500">Ctrl+Enter run selection · Ctrl+Shift+Enter run all</div>

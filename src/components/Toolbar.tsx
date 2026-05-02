@@ -1,4 +1,4 @@
-import { Play, PlayCircle, Save } from "lucide-react";
+import { Play, PlayCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "./ui/Button";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -8,7 +8,7 @@ import { extractSelectedOrStatement } from "../utils/sql";
 
 export function Toolbar() {
   const { activeConnectionId, connections, statusById, listDatabases, setDatabase, connect, disconnect } = useConnectionStore();
-  const { tabs, activeTabId, createTab, setActive, closeTab, selection } = useEditorStore();
+  const { tabs, activeTabId, selection } = useEditorStore();
   const { running, runQuery } = useQueryStore();
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const activeConn = connections.find((c) => c.id === activeConnectionId) ?? null;
@@ -79,12 +79,7 @@ export function Toolbar() {
           <PlayCircle className="size-4" />
           Run All
         </Button>
-        <Button size="sm" variant="ghost" disabled>
-          <Save className="size-4" />
-          Save Script
-        </Button>
       </div>
-
       <div className="ml-2 flex items-center gap-2 text-xs text-zinc-400">
         <span className="rounded-md border border-white/10 bg-white/5 px-2 py-1">{activeConn ? `${activeConn.db_type} · ${activeConn.host}:${activeConn.port}` : "No connection"}</span>
         {activeConn ? (
@@ -115,34 +110,6 @@ export function Toolbar() {
         </div>
       ) : null}
 
-      <div className="ml-auto flex min-w-0 items-center gap-2">
-        <div className="flex min-w-0 items-center gap-1 overflow-auto rounded-lg border border-white/10 bg-white/3 p-1">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              className={`group flex items-center gap-2 rounded-md px-2 py-1 text-xs transition ${t.id === activeTabId ? "bg-white/10 text-zinc-100" : "text-zinc-400 hover:bg-white/6 hover:text-zinc-200"}`}
-              onClick={() => setActive(t.id)}
-              title={t.fileName ? `${t.name} (${t.fileName})` : t.name}
-            >
-              <span className="truncate">{t.name}{t.isSaved ? "" : " *"}</span>
-              {tabs.length > 1 ? (
-                <span
-                  className="grid size-5 place-items-center rounded hover:bg-white/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeTab(t.id);
-                  }}
-                >
-                  ×
-                </span>
-              ) : null}
-            </button>
-          ))}
-        </div>
-        <Button size="sm" variant="ghost" onClick={() => createTab({ content: "" })}>
-          +
-        </Button>
-      </div>
     </div>
   );
 }

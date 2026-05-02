@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Database, PlugZap, Plus, Unplug, X } from "lucide-react";
 import clsx from "clsx";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -13,47 +13,14 @@ function dbDotClass(dbType: ConnectionConfig["db_type"]) {
 }
 
 export function Sidebar() {
-  const { connections, activeConnectionId, setActive, statusById, errorById, connect, disconnect, remove, save, listDatabases, setDatabase } = useConnectionStore();
+  const { connections, activeConnectionId, setActive, statusById, errorById, connect, disconnect, remove, save } = useConnectionStore();
   const [modalOpen, setModalOpen] = useState(false);
   const active = useMemo(() => connections.find((c) => c.id === activeConnectionId) ?? null, [connections, activeConnectionId]);
-  const [databases, setDatabases] = useState<string[] | null>(null);
-  const [dbLoading, setDbLoading] = useState(false);
-  const [dbError, setDbError] = useState<string | null>(null);
 
   const activeStatus = active ? (statusById[active.id] ?? "disconnected") : "disconnected";
-  const shouldShowDbList = !!active && activeStatus === "connected";
-
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      if (!active || !shouldShowDbList) {
-        setDatabases(null);
-        setDbError(null);
-        return;
-      }
-      setDbLoading(true);
-      setDbError(null);
-      try {
-        const items = await listDatabases(active.id);
-        if (cancelled) return;
-        setDatabases(items);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        if (cancelled) return;
-        setDbError(message);
-        setDatabases(null);
-      } finally {
-        if (!cancelled) setDbLoading(false);
-      }
-    }
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [active?.id, shouldShowDbList, listDatabases]);
 
   return (
-    <aside className="flex h-full w-[280px] flex-col border-r border-white/10 bg-[color:var(--sidebar-bg)]">
+    <aside className="flex h-full w-full flex-col bg-[color:var(--sidebar-bg)]">
       <div className="flex items-center justify-between gap-3 px-4 py-3">
         <div className="flex items-center gap-2">
           <div className="grid size-8 place-items-center rounded-lg bg-white/5">
@@ -141,51 +108,8 @@ export function Sidebar() {
       </div>
 
       <div className="border-t border-white/10 px-4 py-3">
-        {shouldShowDbList ? (
-          <div className="mb-3">
-            <div className="mb-2 text-xs font-medium text-zinc-300">Database</div>
-            {dbLoading ? <div className="text-xs text-zinc-500">Loading…</div> : null}
-            {dbError ? <div className="mt-1 rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1 text-xs text-red-100">{dbError}</div> : null}
-            {databases && databases.length > 0 ? (
-              <div className="mt-2 max-h-[180px] overflow-auto rounded-lg border border-white/10 bg-white/3 p-1">
-                <button
-                  className={clsx(
-                    "w-full truncate rounded-md px-2 py-1 text-left text-xs hover:bg-white/6",
-                    active?.database.trim() === "" ? "text-zinc-100" : "text-zinc-300",
-                  )}
-                  onClick={async () => {
-                    if (!active) return;
-                    await setDatabase(active.id, "");
-                    await disconnect(active.id).catch(() => undefined);
-                    await connect(active.id);
-                  }}
-                  title="All databases"
-                >
-                  (All databases)
-                </button>
-                {databases.map((db) => (
-                  <button
-                    key={db}
-                    className={clsx(
-                      "w-full truncate rounded-md px-2 py-1 text-left text-xs hover:bg-white/6",
-                      active?.database === db ? "text-zinc-100" : "text-zinc-200",
-                    )}
-                    onClick={async () => {
-                      if (!active) return;
-                      await setDatabase(active.id, db);
-                      await disconnect(active.id).catch(() => undefined);
-                      await connect(active.id);
-                    }}
-                    title={`Connect to ${db}`}
-                  >
-                    {db}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
         <div className="text-xs text-zinc-500">Active: {active?.name ?? "None"}</div>
+        <div className="mt-1 text-xs text-zinc-600">Status: {activeStatus}</div>
       </div>
 
       <ConnectionModal open={modalOpen} onClose={() => setModalOpen(false)} />

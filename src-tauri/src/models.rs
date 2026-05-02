@@ -76,6 +76,7 @@ pub struct RowDelete {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApplyChangesInput {
     pub connection_id: String,
     pub database: String,
@@ -99,4 +100,3 @@ pub struct ScriptInfo {
     pub name: String,
     pub updated_at: Option<String>,
 }
-
