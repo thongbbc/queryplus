@@ -5,7 +5,7 @@ import { useConnectionStore } from "../stores/connectionStore";
 import type { ConnectionConfig } from "../types/connection";
 import { Button } from "./ui/Button";
 import { ConnectionModal } from "./ConnectionModal";
-import logo from "../assets/logo-mark.svg";
+import logo from "../assets/logo-mark.svg?url";
 
 function dbDotClass(dbType: ConnectionConfig["db_type"]) {
   if (dbType === "postgres") return "bg-[var(--postgres-color)]";
