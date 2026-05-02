@@ -17,19 +17,6 @@ use std::future::Future;
 
 const QUERY_TIMEOUT_SECS: u64 = 30;
 
-fn run_with_timeout<T>(
-    pool_fut: impl Future<Output = Result<T, String>>,
-) -> impl Future<Output = Result<T, String>> {
-    async move {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(QUERY_TIMEOUT_SECS),
-            pool_fut,
-        )
-        .await
-        .map_err(|_| format!("Query timed out after {} seconds", QUERY_TIMEOUT_SECS))?
-    }
-}
-
 fn find_connection(state: &AppState, id: &str) -> Option<ConnectionConfig> {
     state
         .connections
@@ -78,11 +65,24 @@ where
             Some(DbPool::Postgres(p)) => p,
             _ => return Err("Not connected".into()),
         };
-        match f(pool).await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(QUERY_TIMEOUT_SECS),
+            f(pool),
+        ) {
+            Ok(Ok(v)) => return Ok(v),
+            Ok(Err(e)) => {
                 if !is_connection_error(&e) || attempt >= 3 {
                     return Err(e.to_string());
+                }
+                attempt += 1;
+                state.pools.reconnect(config).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(1500);
+            }
+            Err(_) => {
+                let msg = format!("Query timed out after {} seconds", QUERY_TIMEOUT_SECS);
+                if attempt >= 3 {
+                    return Err(msg);
                 }
                 attempt += 1;
                 state.pools.reconnect(config).await?;
@@ -108,11 +108,24 @@ where
             Some(DbPool::Mysql(p)) => p,
             _ => return Err("Not connected".into()),
         };
-        match f(pool).await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(QUERY_TIMEOUT_SECS),
+            f(pool),
+        ) {
+            Ok(Ok(v)) => return Ok(v),
+            Ok(Err(e)) => {
                 if !is_connection_error(&e) || attempt >= 3 {
                     return Err(e.to_string());
+                }
+                attempt += 1;
+                state.pools.reconnect(config).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(1500);
+            }
+            Err(_) => {
+                let msg = format!("Query timed out after {} seconds", QUERY_TIMEOUT_SECS);
+                if attempt >= 3 {
+                    return Err(msg);
                 }
                 attempt += 1;
                 state.pools.reconnect(config).await?;
@@ -324,7 +337,6 @@ fn row_to_json_typed_mysql(
 
 #[tauri::command]
 pub async fn execute_query(state: State<'_, AppState>, connection_id: String, query: String) -> Result<QueryResult, String> {
-    run_with_timeout(async move {
     let config = find_connection(&state, &connection_id).ok_or("Connection not found")?;
     if state.pools.get(&connection_id).is_none() {
         return Err("Not connected. Click Connect first.".into());
@@ -334,7 +346,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
     let started = std::time::Instant::now();
 
     let pool = state.pools.get(&connection_id).ok_or("Not connected")?;
-    let out = match pool {
+    let result = match pool {
         DbPool::Postgres(_) => {
             if meta.is_select {
                 let rows = run_pg_with_retries(&state, &config, |p| {
@@ -501,8 +513,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
         }
     };
 
-    Ok(out)
-    }.await)
+    Ok(result)
 }
 
 async fn compute_editability(

@@ -88,7 +88,7 @@ pub async fn connect_pool(config: &ConnectionConfig) -> Result<DbPool, String> {
                 .acquire_timeout(timeout)
                 .idle_timeout(Duration::from_secs(300))
                 .max_lifetime(Duration::from_secs(1800))
-                .test_on_acquire(true)
+                .test_before_acquire(true)
                 .connect(&url)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -101,7 +101,7 @@ pub async fn connect_pool(config: &ConnectionConfig) -> Result<DbPool, String> {
                 .acquire_timeout(timeout)
                 .idle_timeout(Duration::from_secs(300))
                 .max_lifetime(Duration::from_secs(1800))
-                .test_on_acquire(true)
+                .test_before_acquire(true)
                 .connect(&url)
                 .await
                 .map_err(|e| e.to_string())?;
