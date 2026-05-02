@@ -849,3 +849,8 @@ pub fn load_script(app: tauri::AppHandle, connection_id: String, name: String) -
 pub fn save_script(app: tauri::AppHandle, connection_id: String, name: String, content: String) -> Result<(), String> {
     storage::write_script(&app, &connection_id, &name, &content)
 }
+
+#[tauri::command]
+pub fn delete_script(app: tauri::AppHandle, connection_id: String, name: String) -> Result<(), String> {
+    storage::delete_script(&app, &connection_id, &name)
+}

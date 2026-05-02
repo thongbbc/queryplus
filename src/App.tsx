@@ -6,6 +6,7 @@ import { ResultGrid } from "./components/ResultGrid";
 import { StatusBar } from "./components/StatusBar";
 import { useConnectionStore } from "./stores/connectionStore";
 import { ScriptTabs } from "./components/ScriptTabs";
+import { DialogHost } from "./components/DialogHost";
 
 export default function App() {
   const { load, activeConnectionId, statusById } = useConnectionStore();
@@ -113,6 +114,7 @@ export default function App() {
           <StatusBar />
         </div>
       </div>
+      <DialogHost />
     </div>
   );
 }

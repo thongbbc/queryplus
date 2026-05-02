@@ -44,7 +44,8 @@ pub fn run() {
             commands::get_primary_key,
             commands::list_scripts,
             commands::load_script,
-            commands::save_script
+            commands::save_script,
+            commands::delete_script
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

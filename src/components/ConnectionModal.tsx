@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Modal } from "./ui/Modal";
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import type { ConnectionConfig, DbType } from "../types/connection";
 import { defaultPort } from "../types/connection";
 import { useConnectionStore } from "../stores/connectionStore";
+import { useDialogStore } from "../stores/dialogStore";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -14,8 +15,16 @@ function uid(): string {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
-export function ConnectionModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { upsert, save, testConnection, setActive } = useConnectionStore();
+export function ConnectionModal({
+  open,
+  onClose,
+  connection,
+}: {
+  open: boolean;
+  onClose: () => void;
+  connection?: ConnectionConfig | null;
+}) {
+  const { upsert, save, testConnection, setActive, disconnect, remove } = useConnectionStore();
   const [dbType, setDbType] = useState<DbType>("postgres");
   const [name, setName] = useState("Local");
   const [host, setHost] = useState("127.0.0.1");
@@ -28,10 +37,34 @@ export function ConnectionModal({ open, onClose }: { open: boolean; onClose: () 
   const [testMsg, setTestMsg] = useState<string | null>(null);
   const canSave = useMemo(() => name.trim() && host.trim() && port > 0 && username.trim(), [name, host, port, username]);
 
+  useEffect(() => {
+    if (!open) return;
+    setTestMsg(null);
+    if (connection) {
+      setDbType(connection.db_type);
+      setName(connection.name);
+      setHost(connection.host);
+      setPort(connection.port);
+      setUsername(connection.username);
+      setPassword(connection.password);
+      setDatabase(connection.database);
+      setSsl(connection.ssl);
+      return;
+    }
+    setDbType("postgres");
+    setName("Local");
+    setHost("127.0.0.1");
+    setPort(defaultPort("postgres"));
+    setUsername("postgres");
+    setPassword("");
+    setDatabase("");
+    setSsl(false);
+  }, [open, connection]);
+
   return (
     <Modal
       open={open}
-      title="New Connection"
+      title={connection ? "Edit Connection" : "New Connection"}
       onClose={() => {
         setTestMsg(null);
         onClose();
@@ -116,24 +149,62 @@ export function ConnectionModal({ open, onClose }: { open: boolean; onClose: () 
         </Button>
 
         <div className="flex items-center gap-2">
+          {connection ? (
+            <Button
+              variant="danger"
+              onClick={async () => {
+                const ok = await useDialogStore.getState().confirm({
+                  title: "Delete connection",
+                  message: `Delete "${connection.name}"?\n\nThis will disconnect it immediately.`,
+                  confirmText: "Delete",
+                  cancelText: "Cancel",
+                });
+                if (!ok) return;
+                await disconnect(connection.id).catch(() => undefined);
+                remove(connection.id);
+                await save();
+                setTestMsg(null);
+                onClose();
+              }}
+            >
+              Delete
+            </Button>
+          ) : null}
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button
             onClick={async () => {
-              const c: ConnectionConfig = {
-                id: `c-${uid()}`,
-                name,
-                db_type: dbType,
-                host,
-                port,
-                username,
-                password,
-                database,
-                ssl,
-                created_at: nowIso(),
-                updated_at: nowIso(),
-              };
+              const now = nowIso();
+              if (connection) {
+                await disconnect(connection.id).catch(() => undefined);
+              }
+              const c: ConnectionConfig = connection
+                ? {
+                    ...connection,
+                    name,
+                    db_type: dbType,
+                    host,
+                    port,
+                    username,
+                    password,
+                    database,
+                    ssl,
+                    updated_at: now,
+                  }
+                : {
+                    id: `c-${uid()}`,
+                    name,
+                    db_type: dbType,
+                    host,
+                    port,
+                    username,
+                    password,
+                    database,
+                    ssl,
+                    created_at: now,
+                    updated_at: now,
+                  };
               upsert(c);
               setActive(c.id);
               await save();

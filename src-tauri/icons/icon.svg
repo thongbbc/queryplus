@@ -1,0 +1,32 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="g0" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(330 250) rotate(55) scale(940)">
+      <stop stop-color="#7DD3FC"/>
+      <stop offset="0.35" stop-color="#60A5FA"/>
+      <stop offset="0.72" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </radialGradient>
+    <linearGradient id="g1" x1="220" y1="190" x2="820" y2="850" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="white" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="s" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="16" stdDeviation="22" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect x="96" y="96" width="832" height="832" rx="192" fill="#0B0B10"/>
+  <rect x="116" y="116" width="792" height="792" rx="176" fill="url(#g0)" filter="url(#s)"/>
+  <rect x="116" y="116" width="792" height="792" rx="176" fill="url(#g1)"/>
+
+  <g fill="none" stroke="white" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M512 292C397.6 292 305 384.6 305 499C305 613.4 397.6 706 512 706C564.2 706 611.7 687.9 648.7 657.8" stroke-width="84" opacity="0.95"/>
+    <path d="M647 658L740 751" stroke-width="84" opacity="0.95"/>
+  </g>
+
+  <g fill="none" stroke="white" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+    <path d="M690 410V538" stroke-width="58"/>
+    <path d="M626 474H754" stroke-width="58"/>
+  </g>
+</svg>
+

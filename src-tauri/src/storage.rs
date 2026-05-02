@@ -94,3 +94,11 @@ pub fn write_script(app: &tauri::AppHandle, connection_id: &str, name: &str, con
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
+pub fn delete_script(app: &tauri::AppHandle, connection_id: &str, name: &str) -> Result<(), String> {
+    let name = sanitize_file_name(name)?;
+    let path = scripts_dir(app, connection_id)?.join(name);
+    if !path.exists() {
+        return Err("Script not found".into());
+    }
+    fs::remove_file(path).map_err(|e| e.to_string())
+}

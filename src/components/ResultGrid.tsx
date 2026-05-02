@@ -17,6 +17,7 @@ import { rewriteLimitOffset } from "../utils/sql";
 import { useEditorStore } from "../stores/editorStore";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useShallow } from "zustand/react/shallow";
+import { useDialogStore } from "../stores/dialogStore";
 
 function toDisplay(v: JsonValue): string {
   if (v === null) return "NULL";
@@ -625,16 +626,19 @@ export function ResultGrid() {
                 onClick={() => {
                   const keys = Object.keys(dirty.selectedKeys);
                   if (keys.length === 0) return;
-                  if (
-                    !window.confirm(
-                      `Mark ${keys.length} row(s) for deletion? Click Save to apply.`,
-                    )
-                  )
-                    return;
-                  for (const ks of keys) {
-                    markDeleted(JSON.parse(ks) as RowKey);
-                  }
-                  clearSelection();
+                  void (async () => {
+                    const ok = await useDialogStore.getState().confirm({
+                      title: "Delete selected",
+                      message: `Mark ${keys.length} row(s) for deletion?\n\nClick Save to apply.`,
+                      confirmText: "Mark delete",
+                      cancelText: "Cancel",
+                    });
+                    if (!ok) return;
+                    for (const ks of keys) {
+                      markDeleted(JSON.parse(ks) as RowKey);
+                    }
+                    clearSelection();
+                  })();
                 }}
                 disabled={Object.keys(dirty.selectedKeys).length === 0}
               >
@@ -785,12 +789,13 @@ export function ResultGrid() {
                 const ins = snap.inserts.length;
                 const upd = Object.keys(snap.updatesByKey).length;
                 const del = Object.keys(snap.deletesByKey).length;
-                if (
-                  !window.confirm(
-                    `Apply changes now?\n\nInserts: ${ins}\nUpdates: ${upd}\nDeletes: ${del}`,
-                  )
-                )
-                  return;
+                const ok = await useDialogStore.getState().confirm({
+                  title: "Apply changes",
+                  message: `Apply changes now?\n\nInserts: ${ins}\nUpdates: ${upd}\nDeletes: ${del}`,
+                  confirmText: "Apply",
+                  cancelText: "Cancel",
+                });
+                if (!ok) return;
                 setSaving(true);
                 try {
                   await applySave({ connectionId: activeConnectionId });
@@ -801,7 +806,7 @@ export function ResultGrid() {
                   });
                 } catch (e) {
                   const msg = e instanceof Error ? e.message : String(e);
-                  window.alert(msg);
+                  await useDialogStore.getState().alert({ title: "Save failed", message: msg });
                 } finally {
                   setSaving(false);
                 }

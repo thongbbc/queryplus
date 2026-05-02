@@ -1,0 +1,16 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="qp_mark" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7DD3FC"/>
+      <stop offset="0.35" stop-color="#60A5FA"/>
+      <stop offset="0.75" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#qp_mark)"/>
+  <path d="M32 18C23.163 18 16 25.163 16 34C16 42.837 23.163 50 32 50C35.996 50 39.642 48.616 42.48 46.304" stroke="white" stroke-width="7" stroke-linecap="round"/>
+  <path d="M42.4 46.3L49.9 53.8" stroke="white" stroke-width="7" stroke-linecap="round"/>
+  <path d="M47 28V38" stroke="white" stroke-width="5" stroke-linecap="round"/>
+  <path d="M42 33H52" stroke="white" stroke-width="5" stroke-linecap="round"/>
+</svg>
+

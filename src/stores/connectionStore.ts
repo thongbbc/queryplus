@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invokeJson } from "../lib/invoke";
 import type { ConnectionConfig, DbType } from "../types/connection";
+import { useEditorStore } from "./editorStore";
 
 type ConnectionStatus = "connected" | "disconnected" | "connecting";
 
@@ -41,12 +42,14 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   load: async () => {
     const connections = await invokeJson<ConnectionConfig[]>("load_connections");
+    const nextActiveId = connections[0]?.id ?? null;
     set({
       connections,
-      activeConnectionId: connections[0]?.id ?? null,
+      activeConnectionId: nextActiveId,
       statusById: Object.fromEntries(connections.map((c) => [c.id, "disconnected"])) as Record<string, ConnectionStatus>,
       errorById: {},
     });
+    useEditorStore.getState().setActiveConnection(nextActiveId);
   },
 
   save: async () => {
@@ -74,9 +77,14 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       errorById: Object.fromEntries(Object.entries(s.errorById).filter(([k]) => k !== id)) as Record<string, string | undefined>,
       activeConnectionId: s.activeConnectionId === id ? null : s.activeConnectionId,
     }));
+    const nextActive = get().activeConnectionId;
+    useEditorStore.getState().setActiveConnection(nextActive);
   },
 
-  setActive: (id) => set({ activeConnectionId: id }),
+  setActive: (id) => {
+    set({ activeConnectionId: id });
+    useEditorStore.getState().setActiveConnection(id);
+  },
 
   testConnection: async (input) => {
     return await invokeJson<string>("test_connection", {
