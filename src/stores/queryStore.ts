@@ -10,7 +10,6 @@ import type {
   RowKey,
   RowUpdate,
 } from "../types/query";
-import { ensureLimitOffset } from "../utils/sql";
 
 type DirtyState = {
   inserts: { id: string; values: Record<string, JsonValue> }[];
@@ -26,6 +25,7 @@ type QueryState = {
   resultById: Record<string, QueryResult | null>;
   runSeqById: Record<string, number>;
   dirtyById: Record<string, DirtyState>;
+  abortControllers: Record<string, AbortController>;
 
   clearDirty: (connectionId: string) => void;
   toggleSelect: (connectionId: string, key: RowKey) => void;
@@ -39,6 +39,7 @@ type QueryState = {
   removeInsertRow: (connectionId: string, insertId: string) => void;
 
   runQuery: (input: { connectionId: string; query: string }) => Promise<void>;
+  cancelQuery: (connectionId: string) => Promise<void>;
   applySave: (input: { connectionId: string }) => Promise<ApplyChangesResult>;
 };
 
@@ -61,6 +62,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   resultById: {},
   runSeqById: {},
   dirtyById: {},
+  abortControllers: {},
 
   clearDirty: (connectionId) => set((s) => ({ dirtyById: { ...s.dirtyById, [connectionId]: emptyDirty() } })),
 
@@ -163,26 +165,51 @@ export const useQueryStore = create<QueryState>((set, get) => ({
   },
 
   runQuery: async ({ connectionId, query }) => {
-    const normalized = ensureLimitOffset(query, { limit: 100, offset: 0 });
-    const seq = (get().runSeqById[connectionId] ?? 0) + 1;
+    // Cancel any previous running query for this connection
+    const prev = get().abortControllers[connectionId];
+    if (prev) prev.abort();
+
+    const controller = new AbortController();
     set((s) => ({
+      abortControllers: { ...s.abortControllers, [connectionId]: controller },
       runningById: { ...s.runningById, [connectionId]: true },
       errorById: { ...s.errorById, [connectionId]: null },
-      lastQueryById: { ...s.lastQueryById, [connectionId]: normalized },
+      lastQueryById: { ...s.lastQueryById, [connectionId]: query },
       resultById: { ...s.resultById, [connectionId]: null },
-      runSeqById: { ...s.runSeqById, [connectionId]: seq },
+      runSeqById: { ...s.runSeqById, [connectionId]: (s.runSeqById[connectionId] ?? 0) + 1 },
     }));
+    const seq = get().runSeqById[connectionId] ?? 0;
     try {
-      const result = await invokeJson<QueryResult>("execute_query", { connectionId, query: normalized });
+      const result = await invokeJson<QueryResult>("execute_query", { connectionId, query });
       if ((get().runSeqById[connectionId] ?? 0) !== seq) return;
+      if (controller.signal.aborted) return;
       set((s) => ({ resultById: { ...s.resultById, [connectionId]: result }, runningById: { ...s.runningById, [connectionId]: false } }));
       get().clearDirty(connectionId);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
       if ((get().runSeqById[connectionId] ?? 0) !== seq) return;
+      if (controller.signal.aborted) return;
+      const message = e instanceof Error ? e.message : String(e);
       set((s) => ({ runningById: { ...s.runningById, [connectionId]: false }, errorById: { ...s.errorById, [connectionId]: message } }));
       throw e;
     }
+  },
+
+  cancelQuery: async (connectionId) => {
+    // Call backend to kill the query on the database server
+    try {
+      await invokeJson("cancel_query", { connectionId });
+    } catch {
+      // Ignore errors from cancel — the flag is already set
+    }
+    // Also abort the frontend promise
+    const controller = get().abortControllers[connectionId];
+    if (controller) {
+      controller.abort();
+    }
+    set((s) => ({
+      runningById: { ...s.runningById, [connectionId]: false },
+      errorById: { ...s.errorById, [connectionId]: "Query cancelled" },
+    }));
   },
 
   applySave: async ({ connectionId }) => {

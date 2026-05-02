@@ -1,6 +1,16 @@
 import { useConnectionStore } from "../stores/connectionStore";
 import { useQueryStore } from "../stores/queryStore";
 
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(s < 10 ? 2 : 1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = s - m * 60;
+  return `${m}m ${rem.toFixed(0)}s`;
+}
+
 export function StatusBar() {
   const { activeConnectionId, statusById, connections } = useConnectionStore();
   const { resultById } = useQueryStore();
@@ -16,7 +26,7 @@ export function StatusBar() {
       <div className="flex items-center gap-2">
         <span>Rows: {result?.row_count ?? 0}</span>
         <span>·</span>
-        <span>{result ? `${result.execution_time_ms}ms` : "—"}</span>
+        <span>{result ? formatDuration(result.execution_time_ms) : "—"}</span>
       </div>
     </div>
   );

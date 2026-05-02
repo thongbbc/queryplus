@@ -1,3 +1,5 @@
+use std::sync::{atomic::Ordering, Arc};
+
 use tauri::State;
 
 use crate::db::{is_connection_error, DbPool};
@@ -14,6 +16,8 @@ use futures_util::TryStreamExt;
 const MAX_SELECT_ROWS: usize = 1000;
 
 use std::future::Future;
+
+const QUERY_TIMEOUT_SECS: u64 = 30;
 
 fn find_connection(state: &AppState, id: &str) -> Option<ConnectionConfig> {
     state
@@ -51,6 +55,7 @@ fn json_to_opt_string(v: &serde_json::Value) -> Option<String> {
 async fn run_pg_with_retries<T, Fut>(
     state: &AppState,
     config: &ConnectionConfig,
+    cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     mut f: impl FnMut(sqlx::PgPool) -> Fut,
 ) -> Result<T, String>
 where
@@ -59,15 +64,36 @@ where
     let mut attempt = 0u32;
     let mut backoff_ms = 250u64;
     loop {
+        // Check cancel flag before each attempt
+        if let Some(ref flag) = cancel_flag {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("Query cancelled by user".into());
+            }
+        }
         let pool = match state.pools.get(&config.id) {
             Some(DbPool::Postgres(p)) => p,
             _ => return Err("Not connected".into()),
         };
-        match f(pool).await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(QUERY_TIMEOUT_SECS),
+            f(pool),
+        )
+        .await
+        {
+            Ok(Ok(v)) => return Ok(v),
+            Ok(Err(e)) => {
                 if !is_connection_error(&e) || attempt >= 3 {
                     return Err(e.to_string());
+                }
+                attempt += 1;
+                state.pools.reconnect(config).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(1500);
+            }
+            Err(_) => {
+                let msg = format!("Query timed out after {} seconds", QUERY_TIMEOUT_SECS);
+                if attempt >= 3 {
+                    return Err(msg);
                 }
                 attempt += 1;
                 state.pools.reconnect(config).await?;
@@ -81,6 +107,7 @@ where
 async fn run_mysql_with_retries<T, Fut>(
     state: &AppState,
     config: &ConnectionConfig,
+    cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     mut f: impl FnMut(sqlx::MySqlPool) -> Fut,
 ) -> Result<T, String>
 where
@@ -89,15 +116,36 @@ where
     let mut attempt = 0u32;
     let mut backoff_ms = 250u64;
     loop {
+        // Check cancel flag before each attempt
+        if let Some(ref flag) = cancel_flag {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("Query cancelled by user".into());
+            }
+        }
         let pool = match state.pools.get(&config.id) {
             Some(DbPool::Mysql(p)) => p,
             _ => return Err("Not connected".into()),
         };
-        match f(pool).await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(QUERY_TIMEOUT_SECS),
+            f(pool),
+        )
+        .await
+        {
+            Ok(Ok(v)) => return Ok(v),
+            Ok(Err(e)) => {
                 if !is_connection_error(&e) || attempt >= 3 {
                     return Err(e.to_string());
+                }
+                attempt += 1;
+                state.pools.reconnect(config).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(1500);
+            }
+            Err(_) => {
+                let msg = format!("Query timed out after {} seconds", QUERY_TIMEOUT_SECS);
+                if attempt >= 3 {
+                    return Err(msg);
                 }
                 attempt += 1;
                 state.pools.reconnect(config).await?;
@@ -186,7 +234,7 @@ pub async fn list_databases(state: State<'_, AppState>, connection_id: String) -
     let pool = state.pools.get(&connection_id).ok_or("Not connected")?;
     match pool {
         DbPool::Postgres(_) => {
-            run_pg_with_retries(&state, &config, |p| async move {
+            run_pg_with_retries(&state, &config, None, |p| async move {
                 sqlx::query_scalar::<_, String>(
                     "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname",
                 )
@@ -196,7 +244,7 @@ pub async fn list_databases(state: State<'_, AppState>, connection_id: String) -
             .await
         }
         DbPool::Mysql(_) => {
-            run_mysql_with_retries(&state, &config, |p| async move {
+            run_mysql_with_retries(&state, &config, None, |p| async move {
                 sqlx::query_scalar::<_, String>("SHOW DATABASES").fetch_all(&p).await
             })
             .await
@@ -210,36 +258,139 @@ pub fn db_disconnect(state: State<'_, AppState>, connection_id: String) -> Resul
     Ok(())
 }
 
-fn row_to_json_pg(row: &sqlx::postgres::PgRow, columns: &[String]) -> Vec<serde_json::Value> {
+fn row_to_json_typed_pg(
+    row: &sqlx::postgres::PgRow,
+    columns: &[ColumnInfo],
+) -> Vec<serde_json::Value> {
     let mut out = Vec::with_capacity(columns.len());
-    for i in 0..columns.len() {
-        let v = row
-            .try_get::<Option<i64>, _>(i)
-            .map(|x| x.map(serde_json::Value::from))
-            .or_else(|_| row.try_get::<Option<f64>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .or_else(|_| row.try_get::<Option<bool>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .or_else(|_| row.try_get::<Option<String>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .unwrap_or(None)
-            .unwrap_or(serde_json::Value::Null);
+    for (i, col) in columns.iter().enumerate() {
+        let type_name = col.data_type.to_lowercase();
+        let v = match type_name.as_str() {
+            t if t.contains("int") || t.contains("serial") || t == "bigint" || t == "smallint" || t == "integer" => {
+                row.try_get::<Option<i64>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t.contains("float") || t.contains("double") || t.contains("numeric") || t.contains("real") || t == "decimal" => {
+                row.try_get::<Option<f64>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t == "boolean" || t == "bool" => {
+                row.try_get::<Option<bool>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t.contains("json") => {
+                row.try_get::<Option<serde_json::Value>, _>(i)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            _ => {
+                // Fallback: string cho mọi thứ còn lại (text, varchar, date, timestamp, uuid, etc.)
+                row.try_get::<Option<String>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+        };
         out.push(v);
     }
     out
 }
 
-fn row_to_json_mysql(row: &sqlx::mysql::MySqlRow, columns: &[String]) -> Vec<serde_json::Value> {
+fn row_to_json_typed_mysql(
+    row: &sqlx::mysql::MySqlRow,
+    columns: &[ColumnInfo],
+) -> Vec<serde_json::Value> {
     let mut out = Vec::with_capacity(columns.len());
-    for i in 0..columns.len() {
-        let v = row
-            .try_get::<Option<i64>, _>(i)
-            .map(|x| x.map(serde_json::Value::from))
-            .or_else(|_| row.try_get::<Option<f64>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .or_else(|_| row.try_get::<Option<bool>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .or_else(|_| row.try_get::<Option<String>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .unwrap_or(None)
-            .unwrap_or(serde_json::Value::Null);
+    for (i, col) in columns.iter().enumerate() {
+        let type_name = col.data_type.to_lowercase();
+        let v = match type_name.as_str() {
+            t if t.contains("int") || t.contains("serial") || t == "bigint" || t == "smallint" || t == "tinyint" || t == "mediumint" => {
+                row.try_get::<Option<i64>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t.contains("float") || t.contains("double") || t.contains("decimal") || t.contains("numeric") || t == "real" => {
+                row.try_get::<Option<f64>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t == "boolean" || t == "bool" || t == "tinyint(1)" => {
+                row.try_get::<Option<bool>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t.contains("json") => {
+                row.try_get::<Option<serde_json::Value>, _>(i)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            _ => {
+                row.try_get::<Option<String>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+        };
         out.push(v);
     }
     out
+}
+
+/// Set the cancel flag for a connection. execute_query checks this and returns early.
+/// Also runs pg_cancel_backend / KILL QUERY on the database server.
+#[tauri::command]
+pub async fn cancel_query(state: State<'_, AppState>, connection_id: String) -> Result<(), String> {
+    // 1. Set the cancel flag so execute_query checks it
+    if let Ok(flags) = state.cancel_flags.lock() {
+        if let Some(flag) = flags.get(&connection_id) {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    // 2. Try to kill the running query on the database server
+    if let Some(pool) = state.pools.get(&connection_id) {
+        match pool {
+            DbPool::Postgres(p) => {
+                let _ = sqlx::query(
+                    "SELECT pg_cancel_backend(pid) FROM pg_stat_activity \
+                     WHERE state = 'active' AND pid <> pg_backend_pid() \
+                     AND query != '<IDLE>' AND usename = current_user"
+                )
+                .execute(&p)
+                .await;
+            }
+            DbPool::Mysql(p) => {
+                let _ = sqlx::query(
+                    "SELECT GROUP_CONCAT(id) FROM information_schema.PROCESSLIST \
+                     WHERE USER = CURRENT_USER() AND ID <> CONNECTION_ID() \
+                     AND INFO IS NOT NULL AND COMMAND = 'Query'"
+                )
+                .execute(&p)
+                .await;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -249,14 +400,25 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
         return Err("Not connected. Click Connect first.".into());
     }
 
+    // Set cancel flag for this connection
+    {
+        let mut flags = state.cancel_flags.lock().map_err(|_| "lock error".to_string())?;
+        flags.insert(connection_id.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    }
+
+    let cancel_flag = {
+        let flags = state.cancel_flags.lock().map_err(|_| "lock error".to_string())?;
+        flags.get(&connection_id).cloned()
+    };
+
     let meta = parse::parse_select(&query);
     let started = std::time::Instant::now();
 
     let pool = state.pools.get(&connection_id).ok_or("Not connected")?;
-    let out = match pool {
+    let result = match pool {
         DbPool::Postgres(_) => {
             if meta.is_select {
-                let rows = run_pg_with_retries(&state, &config, |p| {
+                let rows = run_pg_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
                     async move {
                         let mut stream = sqlx::query(&q).fetch(&p);
@@ -271,10 +433,6 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     }
                 })
                 .await?;
-                let cols: Vec<String> = rows
-                    .get(0)
-                    .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
-                    .unwrap_or_else(Vec::new);
                 let columns_info: Vec<ColumnInfo> = if let Some(r0) = rows.get(0) {
                     r0.columns()
                         .iter()
@@ -288,7 +446,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                 };
                 let rows_json = rows
                     .iter()
-                    .map(|r| row_to_json_pg(r, &cols))
+                    .map(|r| row_to_json_typed_pg(r, &columns_info))
                     .collect::<Vec<_>>();
 
                 let pagination = if meta.limit.is_some() {
@@ -304,11 +462,11 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     None
                 };
 
-                let (editable, total_records) = run_pg_with_retries(&state, &config, |p| {
+                let editable = run_pg_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let config_ref = &config;
                     let meta_ref = &meta;
                     let columns_ref = &columns_info;
-                    async move { Ok(compute_editability_and_total(&p, config_ref, meta_ref, columns_ref).await) }
+                    async move { Ok(compute_editability(&p, config_ref, meta_ref, columns_ref).await) }
                 })
                 .await?;
 
@@ -319,11 +477,11 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     execution_time_ms: started.elapsed().as_millis() as u64,
                     editable: Some(editable),
                     pagination,
-                    total_records,
+                    total_records: None,
                     affected_rows: None,
                 }
             } else {
-                let res = run_pg_with_retries(&state, &config, |p| {
+                let res = run_pg_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
                     async move { sqlx::query(&q).execute(&p).await }
                 })
@@ -342,7 +500,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
         }
         DbPool::Mysql(_) => {
             if meta.is_select {
-                let rows = run_mysql_with_retries(&state, &config, |p| {
+                let rows = run_mysql_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
                     async move {
                         let mut stream = sqlx::query(&q).fetch(&p);
@@ -357,10 +515,6 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     }
                 })
                 .await?;
-                let cols: Vec<String> = rows
-                    .get(0)
-                    .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
-                    .unwrap_or_else(Vec::new);
                 let columns_info: Vec<ColumnInfo> = if let Some(r0) = rows.get(0) {
                     r0.columns()
                         .iter()
@@ -374,7 +528,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                 };
                 let rows_json = rows
                     .iter()
-                    .map(|r| row_to_json_mysql(r, &cols))
+                    .map(|r| row_to_json_typed_mysql(r, &columns_info))
                     .collect::<Vec<_>>();
 
                 let pagination = if meta.limit.is_some() {
@@ -390,11 +544,11 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     None
                 };
 
-                let (editable, total_records) = run_mysql_with_retries(&state, &config, |p| {
+                let editable = run_mysql_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let config_ref = &config;
                     let meta_ref = &meta;
                     let columns_ref = &columns_info;
-                    async move { Ok(compute_editability_and_total_mysql(&p, config_ref, meta_ref, columns_ref).await) }
+                    async move { Ok(compute_editability_mysql(&p, config_ref, meta_ref, columns_ref).await) }
                 })
                 .await?;
 
@@ -405,11 +559,11 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     execution_time_ms: started.elapsed().as_millis() as u64,
                     editable: Some(editable),
                     pagination,
-                    total_records,
+                    total_records: None,
                     affected_rows: None,
                 }
             } else {
-                let res = run_mysql_with_retries(&state, &config, |p| {
+                let res = run_mysql_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
                     async move { sqlx::query(&q).execute(&p).await }
                 })
@@ -428,15 +582,20 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
         }
     };
 
-    Ok(out)
+    // Cleanup: remove cancel flag entry for this connection
+    if let Ok(mut flags) = state.cancel_flags.lock() {
+        flags.remove(&connection_id);
+    }
+
+    Ok(result)
 }
 
-async fn compute_editability_and_total(
+async fn compute_editability(
     pool: &sqlx::PgPool,
     config: &ConnectionConfig,
     meta: &parse::SelectMeta,
     columns: &[ColumnInfo],
-) -> (EditableResultInfo, Option<u64>) {
+) -> EditableResultInfo {
     let database = if config.database.trim().is_empty() {
         "postgres".to_string()
     } else {
@@ -451,18 +610,16 @@ async fn compute_editability_and_total(
         primary_key_columns: None,
     };
 
-    let mut total_records = None;
-
     if !meta.is_select || !meta.is_simple {
         editable.reason_disabled = Some("Query is not a simple SELECT".into());
-        return (editable, total_records);
+        return editable;
     }
 
     let table = match &meta.table {
         Some(t) => t,
         None => {
             editable.reason_disabled = Some("Cannot detect table".into());
-            return (editable, total_records);
+            return editable;
         }
     };
     let schema = if let Some(s) = meta.schema.clone() {
@@ -477,36 +634,26 @@ async fn compute_editability_and_total(
     if let Ok(pk) = primary_key_pg(pool, &schema, table).await {
         if pk.is_empty() {
             editable.reason_disabled = Some("Table has no primary key".into());
-            return (editable, total_records);
+            return editable;
         }
         let colnames: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
         if !pk.iter().all(|c| colnames.contains(c)) {
             editable.reason_disabled = Some("Primary key columns are not present in result".into());
-            return (editable, total_records);
+            return editable;
         }
         editable.enabled = true;
         editable.primary_key_columns = Some(pk);
     }
 
-    let count_sql = format!(
-        "SELECT COUNT(*)::bigint AS count FROM {}",
-        qualify_table(&DbType::Postgres, Some(&schema), table)
-    );
-    if let Ok(row) = sqlx::query_scalar::<_, i64>(&count_sql).fetch_one(pool).await {
-        if row >= 0 {
-            total_records = Some(row as u64);
-        }
-    }
-
-    (editable, total_records)
+    editable
 }
 
-async fn compute_editability_and_total_mysql(
+async fn compute_editability_mysql(
     pool: &sqlx::MySqlPool,
     config: &ConnectionConfig,
     meta: &parse::SelectMeta,
     columns: &[ColumnInfo],
-) -> (EditableResultInfo, Option<u64>) {
+) -> EditableResultInfo {
     let database = if config.database.trim().is_empty() {
         "information_schema".to_string()
     } else {
@@ -521,18 +668,16 @@ async fn compute_editability_and_total_mysql(
         primary_key_columns: None,
     };
 
-    let mut total_records = None;
-
     if !meta.is_select || !meta.is_simple {
         editable.reason_disabled = Some("Query is not a simple SELECT".into());
-        return (editable, total_records);
+        return editable;
     }
 
     let table = match &meta.table {
         Some(t) => t,
         None => {
             editable.reason_disabled = Some("Cannot detect table".into());
-            return (editable, total_records);
+            return editable;
         }
     };
 
@@ -541,28 +686,18 @@ async fn compute_editability_and_total_mysql(
     if let Ok(pk) = primary_key_mysql(pool, &schema, table).await {
         if pk.is_empty() {
             editable.reason_disabled = Some("Table has no primary key".into());
-            return (editable, total_records);
+            return editable;
         }
         let colnames: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
         if !pk.iter().all(|c| colnames.contains(c)) {
             editable.reason_disabled = Some("Primary key columns are not present in result".into());
-            return (editable, total_records);
+            return editable;
         }
         editable.enabled = true;
         editable.primary_key_columns = Some(pk);
     }
 
-    let count_sql = format!(
-        "SELECT COUNT(*) AS count FROM {}",
-        qualify_table(&DbType::Mysql, Some(&schema), table)
-    );
-    if let Ok(row) = sqlx::query_scalar::<_, i64>(&count_sql).fetch_one(pool).await {
-        if row >= 0 {
-            total_records = Some(row as u64);
-        }
-    }
-
-    (editable, total_records)
+    editable
 }
 
 async fn primary_key_pg(pool: &sqlx::PgPool, schema: &str, table: &str) -> Result<Vec<String>, sqlx::Error> {
@@ -618,7 +753,7 @@ pub async fn apply_changes(state: State<'_, AppState>, input: ApplyChangesInput)
         DbPool::Postgres(_) => {
             let schema = input.schema.clone().unwrap_or_else(|| "public".into());
             let table = qualify_table(&DbType::Postgres, Some(&schema), &input.table);
-            let inserted = run_pg_with_retries(&state, &config, |p| {
+            let inserted = run_pg_with_retries(&state, &config, None, |p| {
                 let table = &table;
                 let inserts = &input.inserts;
                 let updates = &input.updates;
@@ -734,7 +869,7 @@ pub async fn apply_changes(state: State<'_, AppState>, input: ApplyChangesInput)
         DbPool::Mysql(_) => {
             let schema = input.schema.clone().unwrap_or_else(|| input.database.clone());
             let table = qualify_table(&DbType::Mysql, Some(&schema), &input.table);
-            let inserted = run_mysql_with_retries(&state, &config, |p| {
+            let inserted = run_mysql_with_retries(&state, &config, None, |p| {
                 let table = &table;
                 let inserts = &input.inserts;
                 let updates = &input.updates;
