@@ -360,7 +360,7 @@ fn row_to_json_typed_mysql(
 #[tauri::command]
 pub async fn cancel_query(state: State<'_, AppState>, connection_id: String) -> Result<(), String> {
     // 1. Set the cancel flag so execute_query checks it
-    if let Ok(mut flags) = state.cancel_flags.lock() {
+    if let Ok(flags) = state.cancel_flags.lock() {
         if let Some(flag) = flags.get(&connection_id) {
             flag.store(true, Ordering::SeqCst);
         }
@@ -393,18 +393,6 @@ pub async fn cancel_query(state: State<'_, AppState>, connection_id: String) -> 
     Ok(())
 }
 
-/// Helper: check cancel flag and return Err if cancelled
-fn check_cancelled(state: &AppState, connection_id: &str) -> Result<(), String> {
-    if let Ok(flags) = state.cancel_flags.lock() {
-        if let Some(flag) = flags.get(connection_id) {
-            if flag.load(Ordering::SeqCst) {
-                return Err("Query cancelled by user".into());
-            }
-        }
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn execute_query(state: State<'_, AppState>, connection_id: String, query: String) -> Result<QueryResult, String> {
     let config = find_connection(&state, &connection_id).ok_or("Connection not found")?;
@@ -418,16 +406,9 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
         flags.insert(connection_id.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
     }
 
-    // Use a helper that runs cleanup on exit
     let cancel_flag = {
         let flags = state.cancel_flags.lock().map_err(|_| "lock error".to_string())?;
         flags.get(&connection_id).cloned()
-    };
-
-    let cleanup = || {
-        if let Ok(mut flags) = state.cancel_flags.lock() {
-            flags.remove(&connection_id);
-        }
     };
 
     let meta = parse::parse_select(&query);
