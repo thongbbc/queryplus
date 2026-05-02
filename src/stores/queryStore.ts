@@ -20,23 +20,23 @@ type DirtyState = {
 };
 
 type QueryState = {
-  running: boolean;
-  error: string | null;
-  lastQuery: string;
-  result: QueryResult | null;
-  runSeq: number;
-  dirty: DirtyState;
+  runningById: Record<string, boolean>;
+  errorById: Record<string, string | null>;
+  lastQueryById: Record<string, string>;
+  resultById: Record<string, QueryResult | null>;
+  runSeqById: Record<string, number>;
+  dirtyById: Record<string, DirtyState>;
 
-  clearDirty: () => void;
-  toggleSelect: (key: RowKey) => void;
-  selectAll: (keys: RowKey[]) => void;
-  clearSelection: () => void;
-  markDeleted: (key: RowKey) => void;
-  undoDelete: (key: RowKey) => void;
-  setCell: (key: RowKey, column: string, value: JsonValue) => void;
-  addInsertRow: () => void;
-  setInsertCell: (insertId: string, column: string, value: JsonValue) => void;
-  removeInsertRow: (insertId: string) => void;
+  clearDirty: (connectionId: string) => void;
+  toggleSelect: (connectionId: string, key: RowKey) => void;
+  selectAll: (connectionId: string, keys: RowKey[]) => void;
+  clearSelection: (connectionId: string) => void;
+  markDeleted: (connectionId: string, key: RowKey) => void;
+  undoDelete: (connectionId: string, key: RowKey) => void;
+  setCell: (connectionId: string, key: RowKey, column: string, value: JsonValue) => void;
+  addInsertRow: (connectionId: string) => void;
+  setInsertCell: (connectionId: string, insertId: string, column: string, value: JsonValue) => void;
+  removeInsertRow: (connectionId: string, insertId: string) => void;
 
   runQuery: (input: { connectionId: string; query: string }) => Promise<void>;
   applySave: (input: { connectionId: string }) => Promise<ApplyChangesResult>;
@@ -50,101 +50,144 @@ function uid(): string {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
+function emptyDirty(): DirtyState {
+  return { inserts: [], updatesByKey: {}, deletesByKey: {}, selectedKeys: {} };
+}
+
 export const useQueryStore = create<QueryState>((set, get) => ({
-  running: false,
-  error: null,
-  lastQuery: "",
-  result: null,
-  runSeq: 0,
-  dirty: { inserts: [], updatesByKey: {}, deletesByKey: {}, selectedKeys: {} },
+  runningById: {},
+  errorById: {},
+  lastQueryById: {},
+  resultById: {},
+  runSeqById: {},
+  dirtyById: {},
 
-  clearDirty: () => set({ dirty: { inserts: [], updatesByKey: {}, deletesByKey: {}, selectedKeys: {} } }),
+  clearDirty: (connectionId) => set((s) => ({ dirtyById: { ...s.dirtyById, [connectionId]: emptyDirty() } })),
 
-  toggleSelect: (key) => {
+  toggleSelect: (connectionId, key) => {
     const ks = keyToString(key);
     set((s) => {
-      const next = { ...s.dirty.selectedKeys };
+      const dirty = s.dirtyById[connectionId] ?? emptyDirty();
+      const next = { ...dirty.selectedKeys };
       if (next[ks]) delete next[ks];
       else next[ks] = true;
-      return { dirty: { ...s.dirty, selectedKeys: next } };
+      return { dirtyById: { ...s.dirtyById, [connectionId]: { ...dirty, selectedKeys: next } } };
     });
   },
 
-  selectAll: (keys) => {
+  selectAll: (connectionId, keys) => {
     set((s) => ({
-      dirty: { ...s.dirty, selectedKeys: Object.fromEntries(keys.map((k) => [keyToString(k), true])) as Record<string, true> },
+      dirtyById: {
+        ...s.dirtyById,
+        [connectionId]: {
+          ...(s.dirtyById[connectionId] ?? emptyDirty()),
+          selectedKeys: Object.fromEntries(keys.map((k) => [keyToString(k), true])) as Record<string, true>,
+        },
+      },
     }));
   },
 
-  clearSelection: () => set((s) => ({ dirty: { ...s.dirty, selectedKeys: {} } })),
+  clearSelection: (connectionId) =>
+    set((s) => ({ dirtyById: { ...s.dirtyById, [connectionId]: { ...(s.dirtyById[connectionId] ?? emptyDirty()), selectedKeys: {} } } })),
 
-  markDeleted: (key) => {
-    const ks = keyToString(key);
-    set((s) => ({ dirty: { ...s.dirty, deletesByKey: { ...s.dirty.deletesByKey, [ks]: true } } }));
-  },
-
-  undoDelete: (key) => {
+  markDeleted: (connectionId, key) => {
     const ks = keyToString(key);
     set((s) => {
-      const next = { ...s.dirty.deletesByKey };
-      delete next[ks];
-      return { dirty: { ...s.dirty, deletesByKey: next } };
+      const dirty = s.dirtyById[connectionId] ?? emptyDirty();
+      return { dirtyById: { ...s.dirtyById, [connectionId]: { ...dirty, deletesByKey: { ...dirty.deletesByKey, [ks]: true } } } };
     });
   },
 
-  setCell: (key, column, value) => {
+  undoDelete: (connectionId, key) => {
     const ks = keyToString(key);
     set((s) => {
-      const existing = s.dirty.updatesByKey[ks] ?? {};
+      const dirty = s.dirtyById[connectionId] ?? emptyDirty();
+      const next = { ...dirty.deletesByKey };
+      delete next[ks];
+      return { dirtyById: { ...s.dirtyById, [connectionId]: { ...dirty, deletesByKey: next } } };
+    });
+  },
+
+  setCell: (connectionId, key, column, value) => {
+    const ks = keyToString(key);
+    set((s) => {
+      const dirty = s.dirtyById[connectionId] ?? emptyDirty();
+      const existing = dirty.updatesByKey[ks] ?? {};
       return {
-        dirty: {
-          ...s.dirty,
-          updatesByKey: {
-            ...s.dirty.updatesByKey,
-            [ks]: { ...existing, [column]: value },
+        dirtyById: {
+          ...s.dirtyById,
+          [connectionId]: {
+            ...dirty,
+            updatesByKey: {
+              ...dirty.updatesByKey,
+              [ks]: { ...existing, [column]: value },
+            },
           },
         },
       };
     });
   },
 
-  addInsertRow: () => {
+  addInsertRow: (connectionId) => {
     const id = `ins-${uid()}`;
-    set((s) => ({ dirty: { ...s.dirty, inserts: [{ id, values: {} }, ...s.dirty.inserts] } }));
+    set((s) => {
+      const dirty = s.dirtyById[connectionId] ?? emptyDirty();
+      return { dirtyById: { ...s.dirtyById, [connectionId]: { ...dirty, inserts: [{ id, values: {} }, ...dirty.inserts] } } };
+    });
   },
 
-  setInsertCell: (insertId, column, value) => {
+  setInsertCell: (connectionId, insertId, column, value) => {
     set((s) => ({
-      dirty: {
-        ...s.dirty,
-        inserts: s.dirty.inserts.map((r) => (r.id === insertId ? { ...r, values: { ...r.values, [column]: value } } : r)),
+      dirtyById: {
+        ...s.dirtyById,
+        [connectionId]: {
+          ...(s.dirtyById[connectionId] ?? emptyDirty()),
+          inserts: (s.dirtyById[connectionId] ?? emptyDirty()).inserts.map((r) =>
+            r.id === insertId ? { ...r, values: { ...r.values, [column]: value } } : r
+          ),
+        },
       },
     }));
   },
 
-  removeInsertRow: (insertId) => {
-    set((s) => ({ dirty: { ...s.dirty, inserts: s.dirty.inserts.filter((r) => r.id !== insertId) } }));
+  removeInsertRow: (connectionId, insertId) => {
+    set((s) => ({
+      dirtyById: {
+        ...s.dirtyById,
+        [connectionId]: {
+          ...(s.dirtyById[connectionId] ?? emptyDirty()),
+          inserts: (s.dirtyById[connectionId] ?? emptyDirty()).inserts.filter((r) => r.id !== insertId),
+        },
+      },
+    }));
   },
 
   runQuery: async ({ connectionId, query }) => {
     const normalized = ensureLimitOffset(query, { limit: 100, offset: 0 });
-    const seq = get().runSeq + 1;
-    set({ running: true, error: null, lastQuery: normalized, result: null, runSeq: seq });
+    const seq = (get().runSeqById[connectionId] ?? 0) + 1;
+    set((s) => ({
+      runningById: { ...s.runningById, [connectionId]: true },
+      errorById: { ...s.errorById, [connectionId]: null },
+      lastQueryById: { ...s.lastQueryById, [connectionId]: normalized },
+      resultById: { ...s.resultById, [connectionId]: null },
+      runSeqById: { ...s.runSeqById, [connectionId]: seq },
+    }));
     try {
       const result = await invokeJson<QueryResult>("execute_query", { connectionId, query: normalized });
-      if (get().runSeq !== seq) return;
-      set({ result, running: false });
-      get().clearDirty();
+      if ((get().runSeqById[connectionId] ?? 0) !== seq) return;
+      set((s) => ({ resultById: { ...s.resultById, [connectionId]: result }, runningById: { ...s.runningById, [connectionId]: false } }));
+      get().clearDirty(connectionId);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      if (get().runSeq !== seq) return;
-      set({ running: false, error: message });
+      if ((get().runSeqById[connectionId] ?? 0) !== seq) return;
+      set((s) => ({ runningById: { ...s.runningById, [connectionId]: false }, errorById: { ...s.errorById, [connectionId]: message } }));
       throw e;
     }
   },
 
   applySave: async ({ connectionId }) => {
-    const { result, dirty } = get();
+    const result = get().resultById[connectionId] ?? null;
+    const dirty = get().dirtyById[connectionId] ?? emptyDirty();
     if (!result?.editable?.enabled || !result.editable.table || !result.editable.primary_key_columns) {
       throw new Error(result?.editable?.reason_disabled ?? "Result is not editable");
     }
@@ -172,7 +215,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
     };
 
     const out = await invokeJson<ApplyChangesResult>("apply_changes", { input });
-    get().clearDirty();
+    get().clearDirty(connectionId);
     return out;
   },
 }));

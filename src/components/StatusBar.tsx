@@ -3,9 +3,10 @@ import { useQueryStore } from "../stores/queryStore";
 
 export function StatusBar() {
   const { activeConnectionId, statusById, connections } = useConnectionStore();
-  const { result } = useQueryStore();
+  const { resultById } = useQueryStore();
   const conn = connections.find((c) => c.id === activeConnectionId) ?? null;
   const status = activeConnectionId ? statusById[activeConnectionId] : "disconnected";
+  const result = activeConnectionId ? resultById[activeConnectionId] ?? null : null;
   return (
     <div className="flex items-center justify-between gap-3 border-t border-white/10 bg-[#0f0f14]/60 px-4 py-2 text-xs text-zinc-400">
       <div className="flex items-center gap-2">
@@ -20,4 +21,3 @@ export function StatusBar() {
     </div>
   );
 }
-

@@ -51,10 +51,10 @@ type GridColumn =
 
 export function ResultGrid() {
   const {
-    result,
-    error,
-    running,
-    dirty,
+    resultById,
+    errorById,
+    runningById,
+    dirtyById,
     clearDirty,
     setCell,
     toggleSelect,
@@ -66,13 +66,13 @@ export function ResultGrid() {
     removeInsertRow,
     applySave,
     runQuery,
-    lastQuery,
+    lastQueryById,
   } = useQueryStore(
     useShallow((s) => ({
-      result: s.result,
-      error: s.error,
-      running: s.running,
-      dirty: s.dirty,
+      resultById: s.resultById,
+      errorById: s.errorById,
+      runningById: s.runningById,
+      dirtyById: s.dirtyById,
       clearDirty: s.clearDirty,
       setCell: s.setCell,
       toggleSelect: s.toggleSelect,
@@ -84,7 +84,7 @@ export function ResultGrid() {
       removeInsertRow: s.removeInsertRow,
       applySave: s.applySave,
       runQuery: s.runQuery,
-      lastQuery: s.lastQuery,
+      lastQueryById: s.lastQueryById,
     })),
   );
   const { activeConnectionId } = useConnectionStore();
@@ -103,6 +103,15 @@ export function ResultGrid() {
   const cancelingRef = useRef(false);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+
+  const connectionId = activeConnectionId ?? "";
+  const result = connectionId ? resultById[connectionId] ?? null : null;
+  const error = connectionId ? errorById[connectionId] ?? null : null;
+  const running = connectionId ? runningById[connectionId] ?? false : false;
+  const dirty = connectionId
+    ? dirtyById[connectionId] ?? { inserts: [], updatesByKey: {}, deletesByKey: {}, selectedKeys: {} }
+    : { inserts: [], updatesByKey: {}, deletesByKey: {}, selectedKeys: {} };
+  const lastQuery = connectionId ? lastQueryById[connectionId] ?? "" : "";
 
   const cols = result?.columns ?? [];
   const editable =
@@ -310,9 +319,9 @@ export function ResultGrid() {
                                 <input
                                   type="checkbox"
                                   onChange={(e) => {
-                                    if (e.currentTarget.checked)
-                                      selectAll(rowKeys);
-                                    else clearSelection();
+                                    if (!connectionId) return;
+                                    if (e.currentTarget.checked) selectAll(connectionId, rowKeys);
+                                    else clearSelection(connectionId);
                                   }}
                                 />
                               ) : null}
@@ -418,7 +427,8 @@ export function ResultGrid() {
                                         className="text-xs text-zinc-400 hover:text-zinc-200"
                                         onClick={() => {
                                           const ins = dirty.inserts[vRow.index];
-                                          if (ins) removeInsertRow(ins.id);
+                                          if (!connectionId) return;
+                                          if (ins) removeInsertRow(connectionId, ins.id);
                                         }}
                                         title="Remove new row"
                                       >
@@ -428,7 +438,10 @@ export function ResultGrid() {
                                       <input
                                         type="checkbox"
                                         checked={isSelected}
-                                        onChange={() => toggleSelect(key)}
+                                        onChange={() => {
+                                          if (!connectionId) return;
+                                          toggleSelect(connectionId, key);
+                                        }}
                                       />
                                     ) : null}
                                   </div>
@@ -458,11 +471,8 @@ export function ResultGrid() {
                                       placeholder="NULL"
                                       onChange={(e) => {
                                         if (!ins) return;
-                                        setInsertCell(
-                                          ins.id,
-                                          col.name,
-                                          parseInput(e.currentTarget.value),
-                                        );
+                                        if (!connectionId) return;
+                                        setInsertCell(connectionId, ins.id, col.name, parseInput(e.currentTarget.value));
                                       }}
                                     />
                                   </div>
@@ -548,6 +558,7 @@ export function ResultGrid() {
                                         const nextText = e.currentTarget.value;
                                         if (nextText !== editStart)
                                           setCell(
+                                            connectionId,
                                             key,
                                             col.name,
                                             parseInput(nextText),
@@ -613,7 +624,14 @@ export function ResultGrid() {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             {editable ? (
-              <Button size="sm" variant="ghost" onClick={() => addInsertRow()}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  if (!connectionId) return;
+                  addInsertRow(connectionId);
+                }}
+              >
                 <Plus className="size-4" />
                 Add row
               </Button>
@@ -635,9 +653,11 @@ export function ResultGrid() {
                     });
                     if (!ok) return;
                     for (const ks of keys) {
-                      markDeleted(JSON.parse(ks) as RowKey);
+                      if (!connectionId) return;
+                      markDeleted(connectionId, JSON.parse(ks) as RowKey);
                     }
-                    clearSelection();
+                    if (!connectionId) return;
+                    clearSelection(connectionId);
                   })();
                 }}
                 disabled={Object.keys(dirty.selectedKeys).length === 0}
@@ -655,8 +675,9 @@ export function ResultGrid() {
                   cancelingRef.current = true;
                 }}
                 onClick={() => {
-                  clearDirty();
-                  clearSelection();
+                  if (!connectionId) return;
+                  clearDirty(connectionId);
+                  clearSelection(connectionId);
                   setEditing(null);
                   setEditDraft("");
                   setEditStart("");
@@ -778,14 +799,10 @@ export function ResultGrid() {
                 if (!editable) return;
                 if (!hasDirty && !hasPendingEdit) return;
                 if (editing && hasPendingEdit) {
-                  setCell(
-                    JSON.parse(editing.key) as RowKey,
-                    editing.col,
-                    parseInput(editDraft),
-                  );
+                  setCell(connectionId, JSON.parse(editing.key) as RowKey, editing.col, parseInput(editDraft));
                   setEditing(null);
                 }
-                const snap = useQueryStore.getState().dirty;
+                const snap = useQueryStore.getState().dirtyById[connectionId] ?? { inserts: [], updatesByKey: {}, deletesByKey: {}, selectedKeys: {} };
                 const ins = snap.inserts.length;
                 const upd = Object.keys(snap.updatesByKey).length;
                 const del = Object.keys(snap.deletesByKey).length;

@@ -65,7 +65,11 @@ export function Sidebar() {
                   <div className="min-w-0 flex-1 text-left">
                     <div className="flex items-center gap-2">
                       <div className="min-w-0 flex-1 truncate text-sm font-medium text-zinc-100">{c.name}</div>
-                      {isActive ? <span className="rounded-md border border-sky-400/40 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold text-sky-100">Active</span> : null}
+                      {isActive ? (
+                        <span className="relative -top-px inline-flex h-5 items-center rounded-md border border-sky-400/40 bg-sky-500/10 px-2 text-[10px] font-semibold leading-none text-sky-100">
+                          Active
+                        </span>
+                      ) : null}
                       <button
                         className="grid size-7 place-items-center rounded-md border border-white/10 bg-white/0 text-zinc-400 opacity-0 transition hover:bg-white/5 hover:text-zinc-200 group-hover:opacity-100"
                         onClick={(e) => {
@@ -88,7 +92,7 @@ export function Sidebar() {
 
                 {errorById[c.id] ? <div className="mt-2 rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1 text-xs text-red-100">{errorById[c.id]}</div> : null}
 
-                <div className="mt-2 flex items-center gap-2">
+                <div className="mt-2 flex items-center justify-end gap-2">
                   {status !== "connected" ? (
                     <Button
                       size="sm"
@@ -96,9 +100,9 @@ export function Sidebar() {
                         await connect(c.id);
                       }}
                       disabled={status === "connecting"}
-                      className="w-full"
+                      className="h-7 px-2.5 text-xs"
                     >
-                      <PlugZap className="size-4" />
+                      <PlugZap className="size-3.5" />
                       {status === "connecting" ? "Connecting" : "Connect"}
                     </Button>
                   ) : (
@@ -108,9 +112,9 @@ export function Sidebar() {
                       onClick={async () => {
                         await disconnect(c.id);
                       }}
-                      className="w-full"
+                      className="h-7 px-2.5 text-xs"
                     >
-                      <Unplug className="size-4" />
+                      <Unplug className="size-3.5" />
                       Disconnect
                     </Button>
                   )}

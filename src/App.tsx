@@ -29,6 +29,30 @@ export default function App() {
   }, [load]);
 
   useEffect(() => {
+    if (import.meta.env.DEV) return;
+    function onContextMenu(e: MouseEvent) {
+      e.preventDefault();
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      const key = e.key.toLowerCase();
+      const isDevtools =
+        e.key === "F12" ||
+        (e.ctrlKey && e.shiftKey && (key === "i" || key === "j" || key === "c")) ||
+        (e.metaKey && e.altKey && (key === "i" || key === "j" || key === "c"));
+      const isViewSource = e.ctrlKey && key === "u";
+      if (!isDevtools && !isViewSource) return;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    window.addEventListener("contextmenu", onContextMenu, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("contextmenu", onContextMenu, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
+
+  useEffect(() => {
     function onMove(e: MouseEvent) {
       const d = dragRef.current;
       if (!d) return;

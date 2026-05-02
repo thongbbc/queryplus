@@ -9,10 +9,11 @@ import { extractSelectedOrStatement } from "../utils/sql";
 export function Toolbar() {
   const { activeConnectionId, connections, statusById, listDatabases, setDatabase, connect, disconnect } = useConnectionStore();
   const { tabs, activeTabId, selection } = useEditorStore();
-  const { running, runQuery } = useQueryStore();
+  const { runningById, runQuery } = useQueryStore();
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const activeConn = connections.find((c) => c.id === activeConnectionId) ?? null;
   const status = activeConn ? (statusById[activeConn.id] ?? "disconnected") : "disconnected";
+  const running = activeConnectionId ? (runningById[activeConnectionId] ?? false) : false;
   const [dbItems, setDbItems] = useState<string[]>([]);
   const [dbLoading, setDbLoading] = useState(false);
 
