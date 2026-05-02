@@ -1,3 +1,5 @@
+use std::sync::{atomic::Ordering, Arc};
+
 use tauri::State;
 
 use crate::db::{is_connection_error, DbPool};
@@ -53,6 +55,7 @@ fn json_to_opt_string(v: &serde_json::Value) -> Option<String> {
 async fn run_pg_with_retries<T, Fut>(
     state: &AppState,
     config: &ConnectionConfig,
+    cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     mut f: impl FnMut(sqlx::PgPool) -> Fut,
 ) -> Result<T, String>
 where
@@ -61,6 +64,12 @@ where
     let mut attempt = 0u32;
     let mut backoff_ms = 250u64;
     loop {
+        // Check cancel flag before each attempt
+        if let Some(ref flag) = cancel_flag {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("Query cancelled by user".into());
+            }
+        }
         let pool = match state.pools.get(&config.id) {
             Some(DbPool::Postgres(p)) => p,
             _ => return Err("Not connected".into()),
@@ -98,6 +107,7 @@ where
 async fn run_mysql_with_retries<T, Fut>(
     state: &AppState,
     config: &ConnectionConfig,
+    cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     mut f: impl FnMut(sqlx::MySqlPool) -> Fut,
 ) -> Result<T, String>
 where
@@ -106,6 +116,12 @@ where
     let mut attempt = 0u32;
     let mut backoff_ms = 250u64;
     loop {
+        // Check cancel flag before each attempt
+        if let Some(ref flag) = cancel_flag {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("Query cancelled by user".into());
+            }
+        }
         let pool = match state.pools.get(&config.id) {
             Some(DbPool::Mysql(p)) => p,
             _ => return Err("Not connected".into()),
@@ -218,7 +234,7 @@ pub async fn list_databases(state: State<'_, AppState>, connection_id: String) -
     let pool = state.pools.get(&connection_id).ok_or("Not connected")?;
     match pool {
         DbPool::Postgres(_) => {
-            run_pg_with_retries(&state, &config, |p| async move {
+            run_pg_with_retries(&state, &config, None, |p| async move {
                 sqlx::query_scalar::<_, String>(
                     "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname",
                 )
@@ -228,7 +244,7 @@ pub async fn list_databases(state: State<'_, AppState>, connection_id: String) -
             .await
         }
         DbPool::Mysql(_) => {
-            run_mysql_with_retries(&state, &config, |p| async move {
+            run_mysql_with_retries(&state, &config, None, |p| async move {
                 sqlx::query_scalar::<_, String>("SHOW DATABASES").fetch_all(&p).await
             })
             .await
@@ -339,12 +355,80 @@ fn row_to_json_typed_mysql(
     out
 }
 
+/// Set the cancel flag for a connection. execute_query checks this and returns early.
+/// Also runs pg_cancel_backend / KILL QUERY on the database server.
+#[tauri::command]
+pub async fn cancel_query(state: State<'_, AppState>, connection_id: String) -> Result<(), String> {
+    // 1. Set the cancel flag so execute_query checks it
+    if let Ok(mut flags) = state.cancel_flags.lock() {
+        if let Some(flag) = flags.get(&connection_id) {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    // 2. Try to kill the running query on the database server
+    if let Some(pool) = state.pools.get(&connection_id) {
+        match pool {
+            DbPool::Postgres(p) => {
+                let _ = sqlx::query(
+                    "SELECT pg_cancel_backend(pid) FROM pg_stat_activity \
+                     WHERE state = 'active' AND pid <> pg_backend_pid() \
+                     AND query != '<IDLE>' AND usename = current_user"
+                )
+                .execute(&p)
+                .await;
+            }
+            DbPool::Mysql(p) => {
+                let _ = sqlx::query(
+                    "SELECT GROUP_CONCAT(id) FROM information_schema.PROCESSLIST \
+                     WHERE USER = CURRENT_USER() AND ID <> CONNECTION_ID() \
+                     AND INFO IS NOT NULL AND COMMAND = 'Query'"
+                )
+                .execute(&p)
+                .await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Helper: check cancel flag and return Err if cancelled
+fn check_cancelled(state: &AppState, connection_id: &str) -> Result<(), String> {
+    if let Ok(flags) = state.cancel_flags.lock() {
+        if let Some(flag) = flags.get(connection_id) {
+            if flag.load(Ordering::SeqCst) {
+                return Err("Query cancelled by user".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn execute_query(state: State<'_, AppState>, connection_id: String, query: String) -> Result<QueryResult, String> {
     let config = find_connection(&state, &connection_id).ok_or("Connection not found")?;
     if state.pools.get(&connection_id).is_none() {
         return Err("Not connected. Click Connect first.".into());
     }
+
+    // Set cancel flag for this connection
+    {
+        let mut flags = state.cancel_flags.lock().map_err(|_| "lock error".to_string())?;
+        flags.insert(connection_id.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    }
+
+    // Use a helper that runs cleanup on exit
+    let cancel_flag = {
+        let flags = state.cancel_flags.lock().map_err(|_| "lock error".to_string())?;
+        flags.get(&connection_id).cloned()
+    };
+
+    let cleanup = || {
+        if let Ok(mut flags) = state.cancel_flags.lock() {
+            flags.remove(&connection_id);
+        }
+    };
 
     let meta = parse::parse_select(&query);
     let started = std::time::Instant::now();
@@ -353,7 +437,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
     let result = match pool {
         DbPool::Postgres(_) => {
             if meta.is_select {
-                let rows = run_pg_with_retries(&state, &config, |p| {
+                let rows = run_pg_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
                     async move {
                         let mut stream = sqlx::query(&q).fetch(&p);
@@ -397,7 +481,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     None
                 };
 
-                let editable = run_pg_with_retries(&state, &config, |p| {
+                let editable = run_pg_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let config_ref = &config;
                     let meta_ref = &meta;
                     let columns_ref = &columns_info;
@@ -416,7 +500,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     affected_rows: None,
                 }
             } else {
-                let res = run_pg_with_retries(&state, &config, |p| {
+                let res = run_pg_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
                     async move { sqlx::query(&q).execute(&p).await }
                 })
@@ -435,7 +519,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
         }
         DbPool::Mysql(_) => {
             if meta.is_select {
-                let rows = run_mysql_with_retries(&state, &config, |p| {
+                let rows = run_mysql_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
                     async move {
                         let mut stream = sqlx::query(&q).fetch(&p);
@@ -479,7 +563,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     None
                 };
 
-                let editable = run_mysql_with_retries(&state, &config, |p| {
+                let editable = run_mysql_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let config_ref = &config;
                     let meta_ref = &meta;
                     let columns_ref = &columns_info;
@@ -498,7 +582,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     affected_rows: None,
                 }
             } else {
-                let res = run_mysql_with_retries(&state, &config, |p| {
+                let res = run_mysql_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
                     async move { sqlx::query(&q).execute(&p).await }
                 })
@@ -516,6 +600,11 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
             }
         }
     };
+
+    // Cleanup: remove cancel flag entry for this connection
+    if let Ok(mut flags) = state.cancel_flags.lock() {
+        flags.remove(&connection_id);
+    }
 
     Ok(result)
 }
@@ -683,7 +772,7 @@ pub async fn apply_changes(state: State<'_, AppState>, input: ApplyChangesInput)
         DbPool::Postgres(_) => {
             let schema = input.schema.clone().unwrap_or_else(|| "public".into());
             let table = qualify_table(&DbType::Postgres, Some(&schema), &input.table);
-            let inserted = run_pg_with_retries(&state, &config, |p| {
+            let inserted = run_pg_with_retries(&state, &config, None, |p| {
                 let table = &table;
                 let inserts = &input.inserts;
                 let updates = &input.updates;
@@ -799,7 +888,7 @@ pub async fn apply_changes(state: State<'_, AppState>, input: ApplyChangesInput)
         DbPool::Mysql(_) => {
             let schema = input.schema.clone().unwrap_or_else(|| input.database.clone());
             let table = qualify_table(&DbType::Mysql, Some(&schema), &input.table);
-            let inserted = run_mysql_with_retries(&state, &config, |p| {
+            let inserted = run_mysql_with_retries(&state, &config, None, |p| {
                 let table = &table;
                 let inserts = &input.inserts;
                 let updates = &input.updates;

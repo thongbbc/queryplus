@@ -100,3 +100,14 @@ pub struct ScriptInfo {
     pub name: String,
     pub updated_at: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CancelStatus {
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum CancelToken {
+    Pg { pid: i32 },
+    Mysql { conn_id: u64 },
+}

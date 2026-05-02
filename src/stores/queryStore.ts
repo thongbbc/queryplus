@@ -195,7 +195,14 @@ export const useQueryStore = create<QueryState>((set, get) => ({
     }
   },
 
-  cancelQuery: (connectionId) => {
+  cancelQuery: async (connectionId) => {
+    // Call backend to kill the query on the database server
+    try {
+      await invokeJson("cancel_query", { connectionId });
+    } catch {
+      // Ignore errors from cancel — the flag is already set
+    }
+    // Also abort the frontend promise
     const controller = get().abortControllers[connectionId];
     if (controller) {
       controller.abort();

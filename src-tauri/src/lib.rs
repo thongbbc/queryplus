@@ -4,7 +4,7 @@ mod models;
 mod parse;
 mod storage;
 
-use std::sync::Mutex;
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
 use tauri::Manager;
 
@@ -14,6 +14,8 @@ use models::ConnectionConfig;
 pub struct AppState {
     pub connections: Mutex<Vec<ConnectionConfig>>,
     pub pools: DbPoolManager,
+    /// Per-connection cancel flags. When true, the running query should be cancelled.
+    pub cancel_flags: Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -30,6 +32,7 @@ pub fn run() {
         .manage(AppState {
             connections: Mutex::new(Vec::new()),
             pools: DbPoolManager::new(),
+            cancel_flags: Mutex::new(std::collections::HashMap::new()),
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -40,6 +43,7 @@ pub fn run() {
             commands::db_disconnect,
             commands::list_databases,
             commands::execute_query,
+            commands::cancel_query,
             commands::apply_changes,
             commands::get_primary_key,
             commands::list_scripts,
