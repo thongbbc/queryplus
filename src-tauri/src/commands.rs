@@ -15,6 +15,21 @@ const MAX_SELECT_ROWS: usize = 1000;
 
 use std::future::Future;
 
+const QUERY_TIMEOUT_SECS: u64 = 30;
+
+fn run_with_timeout<T>(
+    pool_fut: impl Future<Output = Result<T, String>>,
+) -> impl Future<Output = Result<T, String>> {
+    async move {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(QUERY_TIMEOUT_SECS),
+            pool_fut,
+        )
+        .await
+        .map_err(|_| format!("Query timed out after {} seconds", QUERY_TIMEOUT_SECS))?
+    }
+}
+
 fn find_connection(state: &AppState, id: &str) -> Option<ConnectionConfig> {
     state
         .connections
@@ -210,33 +225,98 @@ pub fn db_disconnect(state: State<'_, AppState>, connection_id: String) -> Resul
     Ok(())
 }
 
-fn row_to_json_pg(row: &sqlx::postgres::PgRow, columns: &[String]) -> Vec<serde_json::Value> {
+fn row_to_json_typed_pg(
+    row: &sqlx::postgres::PgRow,
+    columns: &[ColumnInfo],
+) -> Vec<serde_json::Value> {
     let mut out = Vec::with_capacity(columns.len());
-    for i in 0..columns.len() {
-        let v = row
-            .try_get::<Option<i64>, _>(i)
-            .map(|x| x.map(serde_json::Value::from))
-            .or_else(|_| row.try_get::<Option<f64>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .or_else(|_| row.try_get::<Option<bool>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .or_else(|_| row.try_get::<Option<String>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .unwrap_or(None)
-            .unwrap_or(serde_json::Value::Null);
+    for (i, col) in columns.iter().enumerate() {
+        let type_name = col.data_type.to_lowercase();
+        let v = match type_name.as_str() {
+            t if t.contains("int") || t.contains("serial") || t == "bigint" || t == "smallint" || t == "integer" => {
+                row.try_get::<Option<i64>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t.contains("float") || t.contains("double") || t.contains("numeric") || t.contains("real") || t == "decimal" => {
+                row.try_get::<Option<f64>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t == "boolean" || t == "bool" => {
+                row.try_get::<Option<bool>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t.contains("json") => {
+                row.try_get::<Option<serde_json::Value>, _>(i)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            _ => {
+                // Fallback: string cho mọi thứ còn lại (text, varchar, date, timestamp, uuid, etc.)
+                row.try_get::<Option<String>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+        };
         out.push(v);
     }
     out
 }
 
-fn row_to_json_mysql(row: &sqlx::mysql::MySqlRow, columns: &[String]) -> Vec<serde_json::Value> {
+fn row_to_json_typed_mysql(
+    row: &sqlx::mysql::MySqlRow,
+    columns: &[ColumnInfo],
+) -> Vec<serde_json::Value> {
     let mut out = Vec::with_capacity(columns.len());
-    for i in 0..columns.len() {
-        let v = row
-            .try_get::<Option<i64>, _>(i)
-            .map(|x| x.map(serde_json::Value::from))
-            .or_else(|_| row.try_get::<Option<f64>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .or_else(|_| row.try_get::<Option<bool>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .or_else(|_| row.try_get::<Option<String>, _>(i).map(|x| x.map(serde_json::Value::from)))
-            .unwrap_or(None)
-            .unwrap_or(serde_json::Value::Null);
+    for (i, col) in columns.iter().enumerate() {
+        let type_name = col.data_type.to_lowercase();
+        let v = match type_name.as_str() {
+            t if t.contains("int") || t.contains("serial") || t == "bigint" || t == "smallint" || t == "tinyint" || t == "mediumint" => {
+                row.try_get::<Option<i64>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t.contains("float") || t.contains("double") || t.contains("decimal") || t.contains("numeric") || t == "real" => {
+                row.try_get::<Option<f64>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t == "boolean" || t == "bool" || t == "tinyint(1)" => {
+                row.try_get::<Option<bool>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t.contains("json") => {
+                row.try_get::<Option<serde_json::Value>, _>(i)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            _ => {
+                row.try_get::<Option<String>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+        };
         out.push(v);
     }
     out
@@ -244,6 +324,7 @@ fn row_to_json_mysql(row: &sqlx::mysql::MySqlRow, columns: &[String]) -> Vec<ser
 
 #[tauri::command]
 pub async fn execute_query(state: State<'_, AppState>, connection_id: String, query: String) -> Result<QueryResult, String> {
+    run_with_timeout(async move {
     let config = find_connection(&state, &connection_id).ok_or("Connection not found")?;
     if state.pools.get(&connection_id).is_none() {
         return Err("Not connected. Click Connect first.".into());
@@ -271,10 +352,6 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     }
                 })
                 .await?;
-                let cols: Vec<String> = rows
-                    .get(0)
-                    .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
-                    .unwrap_or_else(Vec::new);
                 let columns_info: Vec<ColumnInfo> = if let Some(r0) = rows.get(0) {
                     r0.columns()
                         .iter()
@@ -288,7 +365,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                 };
                 let rows_json = rows
                     .iter()
-                    .map(|r| row_to_json_pg(r, &cols))
+                    .map(|r| row_to_json_typed_pg(r, &columns_info))
                     .collect::<Vec<_>>();
 
                 let pagination = if meta.limit.is_some() {
@@ -304,11 +381,11 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     None
                 };
 
-                let (editable, total_records) = run_pg_with_retries(&state, &config, |p| {
+                let editable = run_pg_with_retries(&state, &config, |p| {
                     let config_ref = &config;
                     let meta_ref = &meta;
                     let columns_ref = &columns_info;
-                    async move { Ok(compute_editability_and_total(&p, config_ref, meta_ref, columns_ref).await) }
+                    async move { Ok(compute_editability(&p, config_ref, meta_ref, columns_ref).await) }
                 })
                 .await?;
 
@@ -319,7 +396,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     execution_time_ms: started.elapsed().as_millis() as u64,
                     editable: Some(editable),
                     pagination,
-                    total_records,
+                    total_records: None,
                     affected_rows: None,
                 }
             } else {
@@ -357,10 +434,6 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     }
                 })
                 .await?;
-                let cols: Vec<String> = rows
-                    .get(0)
-                    .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
-                    .unwrap_or_else(Vec::new);
                 let columns_info: Vec<ColumnInfo> = if let Some(r0) = rows.get(0) {
                     r0.columns()
                         .iter()
@@ -374,7 +447,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                 };
                 let rows_json = rows
                     .iter()
-                    .map(|r| row_to_json_mysql(r, &cols))
+                    .map(|r| row_to_json_typed_mysql(r, &columns_info))
                     .collect::<Vec<_>>();
 
                 let pagination = if meta.limit.is_some() {
@@ -390,11 +463,11 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     None
                 };
 
-                let (editable, total_records) = run_mysql_with_retries(&state, &config, |p| {
+                let editable = run_mysql_with_retries(&state, &config, |p| {
                     let config_ref = &config;
                     let meta_ref = &meta;
                     let columns_ref = &columns_info;
-                    async move { Ok(compute_editability_and_total_mysql(&p, config_ref, meta_ref, columns_ref).await) }
+                    async move { Ok(compute_editability_mysql(&p, config_ref, meta_ref, columns_ref).await) }
                 })
                 .await?;
 
@@ -405,7 +478,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     execution_time_ms: started.elapsed().as_millis() as u64,
                     editable: Some(editable),
                     pagination,
-                    total_records,
+                    total_records: None,
                     affected_rows: None,
                 }
             } else {
@@ -429,14 +502,15 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
     };
 
     Ok(out)
+    }.await)
 }
 
-async fn compute_editability_and_total(
+async fn compute_editability(
     pool: &sqlx::PgPool,
     config: &ConnectionConfig,
     meta: &parse::SelectMeta,
     columns: &[ColumnInfo],
-) -> (EditableResultInfo, Option<u64>) {
+) -> EditableResultInfo {
     let database = if config.database.trim().is_empty() {
         "postgres".to_string()
     } else {
@@ -451,18 +525,16 @@ async fn compute_editability_and_total(
         primary_key_columns: None,
     };
 
-    let mut total_records = None;
-
     if !meta.is_select || !meta.is_simple {
         editable.reason_disabled = Some("Query is not a simple SELECT".into());
-        return (editable, total_records);
+        return editable;
     }
 
     let table = match &meta.table {
         Some(t) => t,
         None => {
             editable.reason_disabled = Some("Cannot detect table".into());
-            return (editable, total_records);
+            return editable;
         }
     };
     let schema = if let Some(s) = meta.schema.clone() {
@@ -477,36 +549,26 @@ async fn compute_editability_and_total(
     if let Ok(pk) = primary_key_pg(pool, &schema, table).await {
         if pk.is_empty() {
             editable.reason_disabled = Some("Table has no primary key".into());
-            return (editable, total_records);
+            return editable;
         }
         let colnames: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
         if !pk.iter().all(|c| colnames.contains(c)) {
             editable.reason_disabled = Some("Primary key columns are not present in result".into());
-            return (editable, total_records);
+            return editable;
         }
         editable.enabled = true;
         editable.primary_key_columns = Some(pk);
     }
 
-    let count_sql = format!(
-        "SELECT COUNT(*)::bigint AS count FROM {}",
-        qualify_table(&DbType::Postgres, Some(&schema), table)
-    );
-    if let Ok(row) = sqlx::query_scalar::<_, i64>(&count_sql).fetch_one(pool).await {
-        if row >= 0 {
-            total_records = Some(row as u64);
-        }
-    }
-
-    (editable, total_records)
+    editable
 }
 
-async fn compute_editability_and_total_mysql(
+async fn compute_editability_mysql(
     pool: &sqlx::MySqlPool,
     config: &ConnectionConfig,
     meta: &parse::SelectMeta,
     columns: &[ColumnInfo],
-) -> (EditableResultInfo, Option<u64>) {
+) -> EditableResultInfo {
     let database = if config.database.trim().is_empty() {
         "information_schema".to_string()
     } else {
@@ -521,18 +583,16 @@ async fn compute_editability_and_total_mysql(
         primary_key_columns: None,
     };
 
-    let mut total_records = None;
-
     if !meta.is_select || !meta.is_simple {
         editable.reason_disabled = Some("Query is not a simple SELECT".into());
-        return (editable, total_records);
+        return editable;
     }
 
     let table = match &meta.table {
         Some(t) => t,
         None => {
             editable.reason_disabled = Some("Cannot detect table".into());
-            return (editable, total_records);
+            return editable;
         }
     };
 
@@ -541,28 +601,18 @@ async fn compute_editability_and_total_mysql(
     if let Ok(pk) = primary_key_mysql(pool, &schema, table).await {
         if pk.is_empty() {
             editable.reason_disabled = Some("Table has no primary key".into());
-            return (editable, total_records);
+            return editable;
         }
         let colnames: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
         if !pk.iter().all(|c| colnames.contains(c)) {
             editable.reason_disabled = Some("Primary key columns are not present in result".into());
-            return (editable, total_records);
+            return editable;
         }
         editable.enabled = true;
         editable.primary_key_columns = Some(pk);
     }
 
-    let count_sql = format!(
-        "SELECT COUNT(*) AS count FROM {}",
-        qualify_table(&DbType::Mysql, Some(&schema), table)
-    );
-    if let Ok(row) = sqlx::query_scalar::<_, i64>(&count_sql).fetch_one(pool).await {
-        if row >= 0 {
-            total_records = Some(row as u64);
-        }
-    }
-
-    (editable, total_records)
+    editable
 }
 
 async fn primary_key_pg(pool: &sqlx::PgPool, schema: &str, table: &str) -> Result<Vec<String>, sqlx::Error> {
