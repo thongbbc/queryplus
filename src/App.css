@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --sidebar-bg: #1e1e24;
+  --sidebar-hover: #2a2a32;
+  --editor-bg: #1a1a22;
+  --result-bg: #121219;
+  --border-color: #2a2a32;
+  --text-primary: #e6e6ea;
+  --text-secondary: #a0a0ad;
+  --accent-blue: #3b82f6;
+  --postgres-color: #336791;
+  --mysql-color: #f29111;
+  --mariadb-color: #c0765c;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 800px at 30% -10%, rgba(59, 130, 246, 0.18), transparent 55%),
+    radial-gradient(900px 600px at 90% 0%, rgba(192, 118, 92, 0.12), transparent 60%),
+    linear-gradient(180deg, #0d0d12 0%, #0b0b10 100%);
+  color: var(--text-primary);
+}
+
+* {
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  scrollbar-width: thin;
+}
