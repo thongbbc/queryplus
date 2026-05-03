@@ -20,6 +20,32 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useShallow } from "zustand/react/shallow";
 import { useDialogStore } from "../stores/dialogStore";
 
+let measureCanvas: HTMLCanvasElement | null = null;
+function measureTextPx(text: string, font: string): number {
+  if (!text) return 0;
+  if (typeof document === "undefined") return text.length * 8;
+  measureCanvas ??= document.createElement("canvas");
+  const ctx = measureCanvas.getContext("2d");
+  if (!ctx) return text.length * 8;
+  ctx.font = font;
+  return ctx.measureText(text).width;
+}
+
+const headerNameFont =
+  '600 12px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial';
+const headerTypeFont =
+  '400 10px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial';
+
+function estimateColumnWidth(name: string, dataType: string): number {
+  const pad = 24;
+  const maxPx =
+    Math.max(
+      measureTextPx(name, headerNameFont),
+      measureTextPx(dataType, headerTypeFont),
+    ) + pad;
+  return Math.max(120, Math.min(560, Math.ceil(maxPx)));
+}
+
 function toDisplay(v: JsonValue): string {
   if (v === null) return "NULL";
   if (typeof v === "string") return v;
@@ -405,7 +431,7 @@ export function ResultGrid() {
       name: c.name,
       dataType: c.data_type,
       enumValues: c.enum_values,
-      width: 220,
+      width: estimateColumnWidth(c.name, c.data_type),
       colIndex: idx,
     }));
     return [{ key: "__select__", kind: "select", width: 44 }, ...dataCols];
@@ -428,7 +454,7 @@ export function ResultGrid() {
 
   const totalWidth = colVirtualizer.getTotalSize();
   const totalHeight = rowVirtualizer.getTotalSize();
-  const headerHeight = 36;
+  const headerHeight = 44;
 
   useEffect(() => {
     const main = scrollerRef.current;
@@ -755,13 +781,13 @@ export function ResultGrid() {
                             }}
                             className="px-3"
                           >
-                            <div className="flex w-full items-center justify-between gap-2">
-                              <span className="truncate text-xs font-semibold text-zinc-200">
+                            <div className="flex w-full flex-col justify-center gap-0.5 leading-tight">
+                              <div className="text-xs font-semibold text-zinc-200">
                                 {col.name}
-                              </span>
-                              <span className="shrink-0 rounded bg-white/6 px-1.5 py-0.5 text-[10px] font-normal text-zinc-400">
+                              </div>
+                              <div className="text-[10px] font-normal text-zinc-400">
                                 {col.dataType}
-                              </span>
+                              </div>
                             </div>
                           </div>
                         );
