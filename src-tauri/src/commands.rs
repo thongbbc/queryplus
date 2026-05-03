@@ -121,7 +121,7 @@ fn u64_to_json(v: u64) -> serde_json::Value {
 }
 
 fn try_get_pg_string(row: &PgRow, i: usize) -> Option<String> {
-    row.try_get::<Option<String>>(i).ok().flatten()
+    row.try_get::<Option<String>, _>(i).ok().flatten()
 }
 
 fn try_get_pg_string_or_raw(row: &PgRow, i: usize) -> Option<serde_json::Value> {
@@ -133,12 +133,12 @@ fn try_get_pg_string_or_raw(row: &PgRow, i: usize) -> Option<serde_json::Value> 
     if raw.is_null() {
         return None;
     }
-    let bytes = raw.as_bytes()?;
+    let bytes = raw.as_bytes().ok()?;
     String::from_utf8(bytes.to_vec()).ok().map(serde_json::Value::from)
 }
 
 fn try_get_mysql_string(row: &MySqlRow, i: usize) -> Option<String> {
-    row.try_get::<Option<String>>(i).ok().flatten()
+    row.try_get::<Option<String>, _>(i).ok().flatten()
 }
 
 fn try_get_mysql_string_or_raw(row: &MySqlRow, i: usize) -> Option<serde_json::Value> {
@@ -363,7 +363,7 @@ fn row_to_json_typed_pg(
         let type_name = col.data_type.to_lowercase();
         let v = match type_name.as_str() {
             t if is_int_type(t) => {
-                if let Ok(Some(v)) = row.try_get::<Option<i64>>(i) {
+                if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
                     int_to_json(v)
                 } else if let Some(s) = try_get_pg_string(row, i) {
                     serde_json::Value::from(s)
@@ -372,7 +372,7 @@ fn row_to_json_typed_pg(
                 }
             }
             t if is_float_type(t) => {
-                if let Ok(Some(v)) = row.try_get::<Option<f64>>(i) {
+                if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(i) {
                     serde_json::Value::from(v)
                 } else if let Some(s) = try_get_pg_string(row, i) {
                     serde_json::Value::from(s)
@@ -381,7 +381,7 @@ fn row_to_json_typed_pg(
                 }
             }
             t if is_bool_type(t) => {
-                row.try_get::<Option<bool>>(i)
+                row.try_get::<Option<bool>, _>(i)
                     .ok()
                     .flatten()
                     .map(serde_json::Value::from)
@@ -389,14 +389,14 @@ fn row_to_json_typed_pg(
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_json_type(t) => {
-                row.try_get::<Option<serde_json::Value>>(i)
+                row.try_get::<Option<serde_json::Value>, _>(i)
                     .ok()
                     .flatten()
                     .or_else(|| try_get_pg_string(row, i).map(serde_json::Value::from))
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_uuid_type(t) => {
-                row.try_get::<Option<uuid::Uuid>>(i)
+                row.try_get::<Option<uuid::Uuid>, _>(i)
                     .ok()
                     .flatten()
                     .map(|u| serde_json::Value::from(u.to_string()))
@@ -404,7 +404,7 @@ fn row_to_json_typed_pg(
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_date_type(t) => {
-                row.try_get::<Option<NaiveDate>>(i)
+                row.try_get::<Option<NaiveDate>, _>(i)
                     .ok()
                     .flatten()
                     .map(|d| serde_json::Value::from(d.format("%Y-%m-%d").to_string()))
@@ -412,7 +412,7 @@ fn row_to_json_typed_pg(
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_time_type(t) => {
-                row.try_get::<Option<NaiveTime>>(i)
+                row.try_get::<Option<NaiveTime>, _>(i)
                     .ok()
                     .flatten()
                     .map(|t| serde_json::Value::from(t.format("%H:%M:%S").to_string()))
@@ -420,24 +420,24 @@ fn row_to_json_typed_pg(
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_timestamptz_type(t) => {
-                row.try_get::<Option<DateTime<Utc>>>(i)
+                row.try_get::<Option<DateTime<Utc>>, _>(i)
                     .ok()
                     .flatten()
                     .map(|dt| serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string()))
                     .or_else(|| {
-                        row.try_get::<Option<NaiveDateTime>>(i).ok().flatten()
+                        row.try_get::<Option<NaiveDateTime>, _>(i).ok().flatten()
                             .map(|dt| serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string()))
                     })
                     .or_else(|| try_get_pg_string(row, i).map(serde_json::Value::from))
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_timestamp_type(t) => {
-                row.try_get::<Option<NaiveDateTime>>(i)
+                row.try_get::<Option<NaiveDateTime>, _>(i)
                     .ok()
                     .flatten()
                     .map(|dt| serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string()))
                     .or_else(|| {
-                        row.try_get::<Option<DateTime<Utc>>>(i).ok().flatten()
+                    row.try_get::<Option<DateTime<Utc>>, _>(i).ok().flatten()
                             .map(|dt| serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string()))
                     })
                     .or_else(|| try_get_pg_string(row, i).map(serde_json::Value::from))
@@ -462,9 +462,9 @@ fn row_to_json_typed_mysql(
         let type_name = col.data_type.to_lowercase();
         let v = match type_name.as_str() {
             t if is_int_type(t) => {
-                if let Ok(Some(v)) = row.try_get::<Option<i64>>(i) {
+                if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
                     int_to_json(v)
-                } else if let Ok(Some(v)) = row.try_get::<Option<u64>>(i) {
+                } else if let Ok(Some(v)) = row.try_get::<Option<u64>, _>(i) {
                     u64_to_json(v)
                 } else if let Some(s) = try_get_mysql_string(row, i) {
                     serde_json::Value::from(s)
@@ -473,7 +473,7 @@ fn row_to_json_typed_mysql(
                 }
             }
             t if is_float_type(t) => {
-                if let Ok(Some(v)) = row.try_get::<Option<f64>>(i) {
+                if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(i) {
                     serde_json::Value::from(v)
                 } else if let Some(s) = try_get_mysql_string(row, i) {
                     serde_json::Value::from(s)
@@ -482,7 +482,7 @@ fn row_to_json_typed_mysql(
                 }
             }
             t if is_bool_type(t) => {
-                row.try_get::<Option<bool>>(i)
+                row.try_get::<Option<bool>, _>(i)
                     .ok()
                     .flatten()
                     .map(serde_json::Value::from)
@@ -490,14 +490,14 @@ fn row_to_json_typed_mysql(
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_json_type(t) => {
-                row.try_get::<Option<serde_json::Value>>(i)
+                row.try_get::<Option<serde_json::Value>, _>(i)
                     .ok()
                     .flatten()
                     .or_else(|| try_get_mysql_string(row, i).map(serde_json::Value::from))
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_date_type(t) => {
-                row.try_get::<Option<NaiveDate>>(i)
+                row.try_get::<Option<NaiveDate>, _>(i)
                     .ok()
                     .flatten()
                     .map(|d| serde_json::Value::from(d.format("%Y-%m-%d").to_string()))
@@ -505,7 +505,7 @@ fn row_to_json_typed_mysql(
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_time_type(t) => {
-                row.try_get::<Option<NaiveTime>>(i)
+                row.try_get::<Option<NaiveTime>, _>(i)
                     .ok()
                     .flatten()
                     .map(|t| serde_json::Value::from(t.format("%H:%M:%S").to_string()))
@@ -513,12 +513,12 @@ fn row_to_json_typed_mysql(
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_timestamp_type(t) || is_timestamptz_type(t) => {
-                row.try_get::<Option<NaiveDateTime>>(i)
+                row.try_get::<Option<NaiveDateTime>, _>(i)
                     .ok()
                     .flatten()
                     .map(|dt| serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string()))
                     .or_else(|| {
-                        row.try_get::<Option<DateTime<Utc>>>(i).ok().flatten()
+                        row.try_get::<Option<DateTime<Utc>>, _>(i).ok().flatten()
                             .map(|dt| serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string()))
                     })
                     .or_else(|| try_get_mysql_string(row, i).map(serde_json::Value::from))
