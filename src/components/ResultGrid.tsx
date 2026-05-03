@@ -61,7 +61,9 @@ function toDisplay(v: JsonValue): string {
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   if (Array.isArray(v)) return `Array(${v.length})`;
-  return "{…}";
+  // JSON object: show as truncated JSON string
+  const json = JSON.stringify(v);
+  return json.length > 500 ? json.slice(0, 500) + "…" : json;
 }
 
 function parseInput(s: string): JsonValue {
@@ -624,6 +626,34 @@ export function ResultGrid() {
             >
               Set NULL
             </button>
+            <button
+              className="w-full px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/5"
+              onClick={() => {
+                const text = editDraft || editStart;
+                if (text) navigator.clipboard.writeText(text).catch(() => {});
+                setCellMenu(null);
+              }}
+            >
+              Copy <span className="text-zinc-500">Ctrl+C</span>
+            </button>
+            <button
+              className="w-full px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/5"
+              onClick={async () => {
+                try {
+                  const text = await navigator.clipboard.readText();
+                  if (text == null) return;
+                  if (!connectionId) return;
+                  setCell(connectionId, cellMenu.key, cellMenu.col, parseInput(text));
+                  setEditDraft(text);
+                  setEditing(null);
+                  setCellMenu(null);
+                } catch {
+                  // Clipboard read denied
+                }
+              }}
+            >
+              Paste <span className="text-zinc-500">Ctrl+V</span>
+            </button>
             {cellMenu.kind === "time" ? (
               <button
                 className="w-full px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/5"
@@ -894,6 +924,7 @@ export function ResultGrid() {
                             "border-b border-white/10",
                             zebra,
                             isDeleted && "opacity-55",
+                            isSelected && "bg-sky-500/12 ring-1 ring-inset ring-sky-400/40",
                           )}
                         >
                           <div
