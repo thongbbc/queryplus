@@ -35,15 +35,25 @@ const headerNameFont =
   '600 12px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial';
 const headerTypeFont =
   '400 10px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial';
+const cellFont =
+  '400 14px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial';
 
-function estimateColumnWidth(name: string, dataType: string): number {
-  const pad = 24;
-  const maxPx =
-    Math.max(
-      measureTextPx(name, headerNameFont),
-      measureTextPx(dataType, headerTypeFont),
-    ) + pad;
-  return Math.max(120, Math.min(560, Math.ceil(maxPx)));
+function estimateColumnWidthFromSamples(
+  name: string,
+  dataType: string,
+  samples: string[],
+): number {
+  const cellPad = 28;
+  const headerPad = 24 + 24;
+  const headerMin = Math.max(
+    measureTextPx(name, headerNameFont),
+    measureTextPx(dataType, headerTypeFont),
+  ) + headerPad;
+  let maxPx = headerMin;
+  for (const s of samples) {
+    maxPx = Math.max(maxPx, measureTextPx(s, cellFont) + cellPad);
+  }
+  return Math.max(120, Math.min(720, Math.ceil(maxPx)));
 }
 
 function toDisplay(v: JsonValue): string {
@@ -224,6 +234,7 @@ export function ResultGrid() {
   const [cellMenu, setCellMenu] = useState<null | { x: number; y: number; kind: EditKind; key: RowKey; col: string }>(null);
   const [valueMenu, setValueMenu] = useState<null | { x: number; y: number; kind: "enum" | "boolean"; key: RowKey; col: string; options: string[] }>(null);
   const [dateMenu, setDateMenu] = useState<null | { x: number; y: number; kind: "date" | "datetime"; key: RowKey; col: string }>(null);
+  const [colWidthByName, setColWidthByName] = useState<Record<string, number>>({});
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const hScrollRef = useRef<HTMLDivElement | null>(null);
@@ -231,6 +242,7 @@ export function ResultGrid() {
   const syncRef = useRef<null | "main" | "h" | "v">(null);
   const cancelingRef = useRef(false);
   const editInputRef = useRef<HTMLInputElement | null>(null);
+  const resizingRef = useRef<null | { name: string; startX: number; startWidth: number }>(null);
 
   useEffect(() => {
     if (!cellMenu) return;
@@ -425,17 +437,24 @@ export function ResultGrid() {
   const rowCount = insertCount + dataCount;
 
   const gridColumns: GridColumn[] = useMemo(() => {
+    const sampleRows = (result?.rows ?? []).slice(0, 80);
     const dataCols: GridColumn[] = cols.map((c, idx) => ({
       key: c.name,
       kind: "data",
       name: c.name,
       dataType: c.data_type,
       enumValues: c.enum_values,
-      width: estimateColumnWidth(c.name, c.data_type),
+      width:
+        colWidthByName[c.name] ??
+        estimateColumnWidthFromSamples(
+          c.name,
+          c.data_type,
+          sampleRows.map((r) => toDisplay((r?.[idx] as JsonValue | undefined) ?? null)),
+        ),
       colIndex: idx,
     }));
     return [{ key: "__select__", kind: "select", width: 44 }, ...dataCols];
-  }, [cols]);
+  }, [cols, colWidthByName, result?.rows]);
 
   const colVirtualizer = useVirtualizer({
     horizontal: true,
@@ -455,6 +474,36 @@ export function ResultGrid() {
   const totalWidth = colVirtualizer.getTotalSize();
   const totalHeight = rowVirtualizer.getTotalSize();
   const headerHeight = 44;
+
+  useEffect(() => {
+    colVirtualizer.measure();
+  }, [colVirtualizer, colWidthByName]);
+
+  function startResize(
+    e: React.MouseEvent,
+    name: string,
+    startWidth: number,
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    resizingRef.current = { name, startX: e.clientX, startWidth };
+
+    function onMove(ev: MouseEvent) {
+      const cur = resizingRef.current;
+      if (!cur) return;
+      const next = Math.max(80, Math.min(1000, cur.startWidth + (ev.clientX - cur.startX)));
+      setColWidthByName((prev) => (prev[cur.name] === next ? prev : { ...prev, [cur.name]: next }));
+    }
+
+    function onUp() {
+      resizingRef.current = null;
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+    }
+
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
+  }
 
   useEffect(() => {
     const main = scrollerRef.current;
@@ -752,7 +801,10 @@ export function ResultGrid() {
                                 display: "flex",
                                 alignItems: "center",
                               }}
-                              className="px-3"
+                              className={clsx(
+                                "h-full border-r border-white/10 px-3",
+                                vCol.index === 0 && "border-l border-white/10",
+                              )}
                             >
                               {editable && canKey ? (
                                 <input
@@ -779,15 +831,24 @@ export function ResultGrid() {
                               display: "flex",
                               alignItems: "center",
                             }}
-                            className="px-3"
+                            className={clsx(
+                              "relative h-full border-r border-white/10 px-3",
+                              vCol.index === 0 && "border-l border-white/10",
+                            )}
                           >
-                            <div className="flex w-full flex-col justify-center gap-0.5 leading-tight">
-                              <div className="text-xs font-semibold text-zinc-200">
+                            <div className="flex w-full min-w-0 flex-col justify-center gap-0.5 pr-10 leading-tight">
+                              <div className="truncate whitespace-nowrap text-xs font-semibold text-zinc-200">
                                 {col.name}
                               </div>
-                              <div className="text-[10px] font-normal text-zinc-400">
+                              <div className="truncate whitespace-nowrap text-[10px] font-normal text-zinc-400">
                                 {col.dataType}
                               </div>
+                            </div>
+                            <div
+                              className="absolute right-0 top-0 h-full w-3 cursor-col-resize select-none hover:bg-white/5"
+                              onMouseDown={(e) => startResize(e, col.name, gridColumns[vCol.index]?.width ?? vCol.size)}
+                            >
+                              <div className="absolute right-1 top-0 h-full w-px bg-white/10" />
                             </div>
                           </div>
                         );
@@ -859,7 +920,10 @@ export function ResultGrid() {
                                       display: "flex",
                                       alignItems: "center",
                                     }}
-                                    className="px-3"
+                                    className={clsx(
+                                      "h-full border-r border-white/10 px-3",
+                                      vCol.index === 0 && "border-l border-white/10",
+                                    )}
                                   >
                                     {isInsert ? (
                                       <button
@@ -902,7 +966,10 @@ export function ResultGrid() {
                                       display: "flex",
                                       alignItems: "center",
                                     }}
-                                    className="px-3"
+                                    className={clsx(
+                                      "h-full border-r border-white/10 px-3",
+                                      vCol.index === 0 && "border-l border-white/10",
+                                    )}
                                   >
                                     <Input
                                       className="h-8"
@@ -978,7 +1045,8 @@ export function ResultGrid() {
                                     alignItems: "center",
                                   }}
                                   className={clsx(
-                                    "px-3",
+                                    "h-full border-r border-white/10 px-3",
+                                    vCol.index === 0 && "border-l border-white/10",
                                     isPk && "text-zinc-300",
                                     canEditCell && "cursor-text",
                                     isDirtyCell && "rounded-md bg-sky-500/12 ring-1 ring-sky-400/40",
