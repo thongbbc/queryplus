@@ -27,6 +27,8 @@ pub struct ConnectionConfig {
 pub struct ColumnInfo {
     pub name: String,
     pub data_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
