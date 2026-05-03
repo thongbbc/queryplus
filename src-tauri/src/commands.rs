@@ -10,7 +10,7 @@ use crate::models::{
 };
 use crate::{parse, storage, AppState};
 
-use sqlx::{Column, Row};
+use sqlx::{Column, Executor, Row, Statement};
 
 use futures_util::TryStreamExt;
 
@@ -268,18 +268,26 @@ fn row_to_json_typed_pg(
         let type_name = col.data_type.to_lowercase();
         let v = match type_name.as_str() {
             t if t.contains("int") || t.contains("serial") || t == "bigint" || t == "smallint" || t == "integer" => {
-                row.try_get::<Option<i64>, _>(i)
-                    .ok()
-                    .flatten()
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null)
+                if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
+                    if (-(9_007_199_254_740_991_i64)..=9_007_199_254_740_991_i64).contains(&v) {
+                        serde_json::Value::from(v)
+                    } else {
+                        serde_json::Value::from(v.to_string())
+                    }
+                } else if let Ok(Some(s)) = row.try_get::<Option<String>, _>(i) {
+                    serde_json::Value::from(s)
+                } else {
+                    serde_json::Value::Null
+                }
             }
             t if t.contains("float") || t.contains("double") || t.contains("numeric") || t.contains("real") || t == "decimal" => {
-                row.try_get::<Option<f64>, _>(i)
-                    .ok()
-                    .flatten()
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null)
+                if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(i) {
+                    serde_json::Value::from(v)
+                } else if let Ok(Some(s)) = row.try_get::<Option<String>, _>(i) {
+                    serde_json::Value::from(s)
+                } else {
+                    serde_json::Value::Null
+                }
             }
             t if t == "boolean" || t == "bool" => {
                 row.try_get::<Option<bool>, _>(i)
@@ -294,6 +302,37 @@ fn row_to_json_typed_pg(
                     .flatten()
                     .unwrap_or(serde_json::Value::Null)
             }
+            t if t == "uuid" => row
+                .try_get::<Option<uuid::Uuid>, _>(i)
+                .ok()
+                .flatten()
+                .map(|u| serde_json::Value::from(u.to_string()))
+                .unwrap_or(serde_json::Value::Null),
+            t if t == "date" => row
+                .try_get::<Option<chrono::NaiveDate>, _>(i)
+                .ok()
+                .flatten()
+                .map(|d| serde_json::Value::from(d.format("%Y-%m-%d").to_string()))
+                .unwrap_or(serde_json::Value::Null),
+            t if t == "time" || t.contains("time without time zone") => row
+                .try_get::<Option<chrono::NaiveTime>, _>(i)
+                .ok()
+                .flatten()
+                .map(|t| serde_json::Value::from(t.format("%H:%M:%S").to_string()))
+                .unwrap_or(serde_json::Value::Null),
+            t if t.contains("timestamptz") || t.contains("timestamp with time zone") => {
+                row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(|dt| serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string()))
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            t if t.contains("timestamp") => row
+                .try_get::<Option<chrono::NaiveDateTime>, _>(i)
+                .ok()
+                .flatten()
+                .map(|dt| serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string()))
+                .unwrap_or(serde_json::Value::Null),
             _ => {
                 // Fallback: string cho mọi thứ còn lại (text, varchar, date, timestamp, uuid, etc.)
                 row.try_get::<Option<String>, _>(i)
@@ -317,18 +356,32 @@ fn row_to_json_typed_mysql(
         let type_name = col.data_type.to_lowercase();
         let v = match type_name.as_str() {
             t if t.contains("int") || t.contains("serial") || t == "bigint" || t == "smallint" || t == "tinyint" || t == "mediumint" => {
-                row.try_get::<Option<i64>, _>(i)
-                    .ok()
-                    .flatten()
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null)
+                if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
+                    if (-(9_007_199_254_740_991_i64)..=9_007_199_254_740_991_i64).contains(&v) {
+                        serde_json::Value::from(v)
+                    } else {
+                        serde_json::Value::from(v.to_string())
+                    }
+                } else if let Ok(Some(v)) = row.try_get::<Option<u64>, _>(i) {
+                    if v <= 9_007_199_254_740_991_u64 {
+                        serde_json::Value::from(v)
+                    } else {
+                        serde_json::Value::from(v.to_string())
+                    }
+                } else if let Ok(Some(s)) = row.try_get::<Option<String>, _>(i) {
+                    serde_json::Value::from(s)
+                } else {
+                    serde_json::Value::Null
+                }
             }
             t if t.contains("float") || t.contains("double") || t.contains("decimal") || t.contains("numeric") || t == "real" => {
-                row.try_get::<Option<f64>, _>(i)
-                    .ok()
-                    .flatten()
-                    .map(serde_json::Value::from)
-                    .unwrap_or(serde_json::Value::Null)
+                if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(i) {
+                    serde_json::Value::from(v)
+                } else if let Ok(Some(s)) = row.try_get::<Option<String>, _>(i) {
+                    serde_json::Value::from(s)
+                } else {
+                    serde_json::Value::Null
+                }
             }
             t if t == "boolean" || t == "bool" || t == "tinyint(1)" => {
                 row.try_get::<Option<bool>, _>(i)
@@ -343,6 +396,30 @@ fn row_to_json_typed_mysql(
                     .flatten()
                     .unwrap_or(serde_json::Value::Null)
             }
+            t if t.contains("datetime") || t.contains("timestamp") => {
+                if let Ok(Some(dt)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(i) {
+                    serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                } else if let Ok(Some(dt)) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(i)
+                {
+                    serde_json::Value::from(dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                } else if let Ok(Some(s)) = row.try_get::<Option<String>, _>(i) {
+                    serde_json::Value::from(s)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            t if t == "date" => row
+                .try_get::<Option<chrono::NaiveDate>, _>(i)
+                .ok()
+                .flatten()
+                .map(|d| serde_json::Value::from(d.format("%Y-%m-%d").to_string()))
+                .unwrap_or(serde_json::Value::Null),
+            t if t == "time" => row
+                .try_get::<Option<chrono::NaiveTime>, _>(i)
+                .ok()
+                .flatten()
+                .map(|t| serde_json::Value::from(t.format("%H:%M:%S").to_string()))
+                .unwrap_or(serde_json::Value::Null),
             _ => {
                 row.try_get::<Option<String>, _>(i)
                     .ok()
@@ -513,18 +590,24 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     }
                 })
                 .await?;
-                let mut columns_info: Vec<ColumnInfo> = if let Some(r0) = rows.get(0) {
-                    r0.columns()
-                        .iter()
-                        .map(|c| ColumnInfo {
-                            name: c.name().to_string(),
-                            data_type: sqlx::TypeInfo::name(c.type_info()).to_string(),
-                            enum_values: None,
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                let mut columns_info: Vec<ColumnInfo> =
+                    run_pg_with_retries(&state, &config, cancel_flag.clone(), |p| {
+                        let q = query.clone();
+                        async move {
+                            let mut conn = p.acquire().await?;
+                            let stmt = conn.prepare(&q).await?;
+                            Ok(stmt
+                                .columns()
+                                .iter()
+                                .map(|c| ColumnInfo {
+                                    name: c.name().to_string(),
+                                    data_type: sqlx::TypeInfo::name(c.type_info()).to_string(),
+                                    enum_values: None,
+                                })
+                                .collect::<Vec<_>>())
+                        }
+                    })
+                    .await?;
                 let rows_json = rows
                     .iter()
                     .map(|r| row_to_json_typed_pg(r, &columns_info))
@@ -738,18 +821,23 @@ async fn compute_editability(
     };
     editable.schema = Some(schema.clone());
 
-    if let Ok(pk) = primary_key_pg(pool, &schema, table).await {
-        if pk.is_empty() {
-            editable.reason_disabled = Some("Table has no primary key".into());
-            return editable;
+    match primary_key_pg(pool, &schema, table).await {
+        Ok(pk) => {
+            if pk.is_empty() {
+                editable.reason_disabled = Some("Table has no primary key".into());
+                return editable;
+            }
+            let colnames: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+            if !pk.iter().all(|c| colnames.contains(c)) {
+                editable.reason_disabled = Some("Primary key columns are not present in result".into());
+                return editable;
+            }
+            editable.enabled = true;
+            editable.primary_key_columns = Some(pk);
         }
-        let colnames: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-        if !pk.iter().all(|c| colnames.contains(c)) {
-            editable.reason_disabled = Some("Primary key columns are not present in result".into());
-            return editable;
+        Err(e) => {
+            editable.reason_disabled = Some(format!("Failed to read primary key: {}", e));
         }
-        editable.enabled = true;
-        editable.primary_key_columns = Some(pk);
     }
 
     editable

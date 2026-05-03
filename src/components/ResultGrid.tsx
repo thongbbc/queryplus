@@ -10,6 +10,7 @@ import {
 import clsx from "clsx";
 import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
+import DatePicker from "react-datepicker";
 import { useQueryStore } from "../stores/queryStore";
 import type { JsonValue, RowKey } from "../types/query";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -62,6 +63,53 @@ function inferEditKind(dataType: string, enumValues?: string[]): EditKind {
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
+}
+
+function toDateFromDateString(s: string): Date | null {
+  const trimmed = s.trim();
+  if (!trimmed) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(trimmed);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return null;
+  return new Date(y, mo, d);
+}
+
+function toDateFromDateTimeString(s: string): Date | null {
+  const trimmed = s.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  const m =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(
+      normalized,
+    );
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  const hh = Number(m[4]);
+  const mm = Number(m[5]);
+  const ss = Number(m[6] ?? "0");
+  if (
+    !Number.isFinite(y) ||
+    !Number.isFinite(mo) ||
+    !Number.isFinite(d) ||
+    !Number.isFinite(hh) ||
+    !Number.isFinite(mm) ||
+    !Number.isFinite(ss)
+  )
+    return null;
+  return new Date(y, mo, d, hh, mm, ss);
+}
+
+function toDateString(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function toDateTimeInputString(d: Date): string {
+  return `${toDateString(d)}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
 function currentDateString(): string {
@@ -149,45 +197,70 @@ export function ResultGrid() {
   const [saving, setSaving] = useState(false);
   const [cellMenu, setCellMenu] = useState<null | { x: number; y: number; kind: EditKind; key: RowKey; col: string }>(null);
   const [valueMenu, setValueMenu] = useState<null | { x: number; y: number; kind: "enum" | "boolean"; key: RowKey; col: string; options: string[] }>(null);
+  const [dateMenu, setDateMenu] = useState<null | { x: number; y: number; kind: "date" | "datetime"; key: RowKey; col: string }>(null);
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const hScrollRef = useRef<HTMLDivElement | null>(null);
   const vScrollRef = useRef<HTMLDivElement | null>(null);
   const syncRef = useRef<null | "main" | "h" | "v">(null);
   const cancelingRef = useRef(false);
+  const editInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!cellMenu) return;
-    function onDown() {
+    function onDown(e: MouseEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[data-cell-menu="1"]')) return;
       setCellMenu(null);
+      setEditing(null);
+    }
+    function onScroll() {
+      setCellMenu(null);
+      setEditing(null);
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setCellMenu(null);
+      if (e.key === "Escape") {
+        setCellMenu(null);
+        setEditing(null);
+      }
     }
     window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("scroll", onDown, true);
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("keydown", onKey, true);
     return () => {
       window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("scroll", onDown, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("keydown", onKey, true);
     };
   }, [cellMenu]);
 
   useEffect(() => {
     if (!valueMenu) return;
-    function onDown() {
-      setValueMenu(null);
-    }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setValueMenu(null);
+      if (e.key === "Escape") {
+        setValueMenu(null);
+        setEditing(null);
+      }
     }
+    function onDown(e: MouseEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[data-value-menu="1"]')) return;
+      setValueMenu(null);
+      setEditing(null);
+    }
+    function onScroll(e: Event) {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[data-value-menu="1"]')) return;
+      setValueMenu(null);
+      setEditing(null);
+    }
+
     window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("scroll", onDown, true);
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("keydown", onKey, true);
     return () => {
       window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("scroll", onDown, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("keydown", onKey, true);
     };
   }, [valueMenu]);
@@ -209,6 +282,75 @@ export function ResultGrid() {
     !!result.editable.table &&
     (result.editable.primary_key_columns?.length ?? 0) > 0;
   const pkCols = result?.editable?.primary_key_columns ?? [];
+  const editingKind = useMemo(() => {
+    if (!editing) return null;
+    const col = cols.find((c) => c.name === editing.col);
+    if (!col) return null;
+    return inferEditKind(col.data_type, col.enum_values);
+  }, [editing, cols]);
+
+  useEffect(() => {
+    if (!editing) setDateMenu(null);
+  }, [editing]);
+
+  useEffect(() => {
+    if (!dateMenu) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setEditing(null);
+        setDateMenu(null);
+        setValueMenu(null);
+        setCellMenu(null);
+      }
+    }
+    function onScroll(e: Event) {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[data-date-menu="1"]')) return;
+      setEditing(null);
+      setDateMenu(null);
+    }
+
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [dateMenu]);
+
+  useEffect(() => {
+    if (!editing) return;
+    function onDown(e: MouseEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[data-value-menu="1"]')) return;
+      if (target?.closest?.('[data-cell-menu="1"]')) return;
+      if (target?.closest?.('[data-edit-wrapper="1"]')) return;
+      if (target?.closest?.('[data-edit-button="1"]')) return;
+      if (target?.closest?.('[data-date-menu="1"]')) return;
+      setValueMenu(null);
+      setCellMenu(null);
+      if (editingKind === "date" || editingKind === "datetime") {
+        setEditing(null);
+        setDateMenu(null);
+        return;
+      }
+      if (editInputRef.current) editInputRef.current.blur();
+      else setEditing(null);
+    }
+    window.addEventListener("mousedown", onDown, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown, true);
+    };
+  }, [editing, editingKind, editStart]);
+
+  useEffect(() => {
+    if (!editing) return;
+    if (editingKind === "date" || editingKind === "time" || editingKind === "datetime") {
+      const el = editInputRef.current;
+      if (!el) return;
+      requestAnimationFrame(() => el.focus());
+    }
+  }, [editing, editingKind]);
 
   const colIndexByName = useMemo(
     () =>
@@ -392,6 +534,7 @@ export function ResultGrid() {
         {cellMenu ? (
           <div
             className="fixed z-50 min-w-[180px] overflow-hidden rounded-lg border border-white/10 bg-[#0f0f14] shadow-2xl"
+            data-cell-menu="1"
             style={{ left: cellMenu.x, top: cellMenu.y }}
             onMouseDown={(e) => e.stopPropagation()}
           >
@@ -451,8 +594,21 @@ export function ResultGrid() {
         {valueMenu ? (
           <div
             className="fixed z-50 w-[240px] overflow-hidden rounded-lg border border-white/10 bg-[#0f0f14] shadow-2xl"
+            data-value-menu="1"
             style={{ left: valueMenu.x, top: valueMenu.y }}
             onMouseDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setValueMenu(null);
+              setCellMenu({
+                x: e.clientX,
+                y: e.clientY,
+                kind: valueMenu.kind,
+                key: valueMenu.key,
+                col: valueMenu.col,
+              });
+            }}
           >
             <div className="result-scrollbar max-h-56 overflow-y-auto">
               <button
@@ -487,6 +643,46 @@ export function ResultGrid() {
                 </button>
               ))}
             </div>
+          </div>
+        ) : null}
+
+        {dateMenu ? (
+          <div
+            className="fixed z-50"
+            data-date-menu="1"
+            style={{ left: dateMenu.x, top: dateMenu.y }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <DatePicker
+              inline
+              selected={
+                dateMenu.kind === "datetime"
+                  ? toDateFromDateTimeString(editDraft)
+                  : toDateFromDateString(editDraft)
+              }
+              showTimeSelect={dateMenu.kind === "datetime"}
+              timeIntervals={1}
+              timeFormat="HH:mm"
+              dateFormat={dateMenu.kind === "datetime" ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd"}
+              onChange={(d: Date | [Date | null, Date | null] | null) => {
+                if (!connectionId) return;
+                const v = Array.isArray(d) ? d[0] : d;
+                if (!(v instanceof Date) || Number.isNaN(v.getTime())) return;
+                if (dateMenu.kind === "date") {
+                  const out = toDateString(v);
+                  setEditDraft(out);
+                  setCell(connectionId, dateMenu.key, dateMenu.col, out);
+                  setEditing(null);
+                  setDateMenu(null);
+                  setValueMenu(null);
+                  setCellMenu(null);
+                } else {
+                  const outInput = toDateTimeInputString(v);
+                  setEditDraft(outInput);
+                  setCell(connectionId, dateMenu.key, dateMenu.col, outInput.replace("T", " "));
+                }
+              }}
+            />
           </div>
         ) : null}
 
@@ -744,6 +940,8 @@ export function ResultGrid() {
                               return (
                                 <div
                                   key={`${vRow.key}-${col.key}`}
+                                  data-cell-key={keyStr}
+                                  data-cell-col={col.name}
                                   style={{
                                     position: "absolute",
                                     top: 0,
@@ -761,11 +959,18 @@ export function ResultGrid() {
                                   )}
                                   onClick={(e) => {
                                     if (!canEditCell || !cellKey || !key) return;
+                                    if (cellMenu) setCellMenu(null);
                                     if (kind === "enum" || kind === "boolean") {
+                                      const sameMenu =
+                                        !!valueMenu &&
+                                        valueMenu.col === col.name &&
+                                        JSON.stringify(valueMenu.key) === keyStr;
+                                      if (sameMenu) return;
                                       const r = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
                                       setEditing(cellKey);
                                       setEditDraft(initialText);
                                       setEditStart(initialText);
+                                      setValueMenu(null);
                                       setValueMenu({
                                         x: Math.max(8, Math.min(window.innerWidth - 260, Math.round(r.left))),
                                         y: Math.max(8, Math.min(window.innerHeight - 260, Math.round(r.bottom + 6))),
@@ -776,14 +981,43 @@ export function ResultGrid() {
                                       });
                                       return;
                                     }
-                                    if (kind === "date" || kind === "time" || kind === "datetime") {
+                                    if (valueMenu) setValueMenu(null);
+                                    if (kind === "date" || kind === "datetime") {
+                                      const r = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
                                       setEditing(cellKey);
                                       setEditDraft(initialText);
                                       setEditStart(initialText);
+                                      setDateMenu({
+                                        x: Math.max(8, Math.min(window.innerWidth - 360, Math.round(r.left))),
+                                        y: Math.max(8, Math.min(window.innerHeight - (kind === "datetime" ? 520 : 420), Math.round(r.bottom + 6))),
+                                        kind,
+                                        key,
+                                        col: col.name,
+                                      });
+                                      return;
+                                    }
+                                    if (kind === "time") {
+                                      setDateMenu(null);
+                                      setEditing(cellKey);
+                                      setEditDraft(initialText);
+                                      setEditStart(initialText);
+                                      return;
                                     }
                                   }}
-                                  onDoubleClick={() => {
+                                  onDoubleClick={(e) => {
                                     if (!canEditCell || !cellKey) return;
+                                    if (kind === "date" || kind === "datetime") {
+                                      const r = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+                                      setDateMenu({
+                                        x: Math.max(8, Math.min(window.innerWidth - 360, Math.round(r.left))),
+                                        y: Math.max(8, Math.min(window.innerHeight - (kind === "datetime" ? 520 : 420), Math.round(r.bottom + 6))),
+                                        kind,
+                                        key,
+                                        col: col.name,
+                                      });
+                                    } else {
+                                      setDateMenu(null);
+                                    }
                                     setEditing(cellKey);
                                     setEditDraft(initialText);
                                     setEditStart(initialText);
@@ -792,6 +1026,13 @@ export function ResultGrid() {
                                     if (!canEditCell || !cellKey || !key) return;
                                     e.preventDefault();
                                     e.stopPropagation();
+                                    if (
+                                      cellMenu &&
+                                      cellMenu.col === col.name &&
+                                      JSON.stringify(cellMenu.key) === keyStr
+                                    )
+                                      return;
+                                    if (valueMenu) setValueMenu(null);
                                     setEditing(cellKey);
                                     setEditDraft(initialText);
                                     setEditStart(initialText);
@@ -802,10 +1043,18 @@ export function ResultGrid() {
                                     kind === "enum" || kind === "boolean" ? (
                                       <button
                                         className="flex h-8 w-full items-center justify-between rounded-md border border-zinc-300/70 bg-white px-2 text-sm text-black focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                                        data-edit-button="1"
                                         onMouseDown={(e) => {
                                           e.preventDefault();
                                           e.stopPropagation();
+                                          if (cellMenu) setCellMenu(null);
+                                          const sameMenu =
+                                            !!valueMenu &&
+                                            valueMenu.col === col.name &&
+                                            JSON.stringify(valueMenu.key) === keyStr;
+                                          if (sameMenu) return;
                                           const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                                          setValueMenu(null);
                                           setValueMenu({
                                             x: Math.max(8, Math.min(window.innerWidth - 260, Math.round(r.left))),
                                             y: Math.max(8, Math.min(window.innerHeight - 260, Math.round(r.bottom + 6))),
@@ -821,15 +1070,64 @@ export function ResultGrid() {
                                         </span>
                                         <span className="ml-2 text-zinc-400">▾</span>
                                       </button>
+                                    ) : kind === "date" || kind === "datetime" ? (
+                                      <div className="flex h-8 w-full items-center" data-edit-wrapper="1">
+                                        <Input
+                                          autoFocus
+                                          ref={editInputRef}
+                                          data-edit-input="1"
+                                          className="h-8 w-full px-2"
+                                          type="text"
+                                          readOnly
+                                          value={kind === "datetime" ? editDraft.replace("T", " ") : editDraft}
+                                          onKeyDown={(e) => {
+                                            if (e.key === "Escape") {
+                                              setEditing(null);
+                                              setDateMenu(null);
+                                            }
+                                          }}
+                                        />
+                                      </div>
+                                    ) : kind === "time" ? (
+                                      <Input
+                                        autoFocus
+                                        ref={editInputRef}
+                                        data-edit-input="1"
+                                        data-edit-wrapper="1"
+                                        className="h-8 px-2"
+                                        type="time"
+                                        step={1}
+                                        value={editDraft}
+                                        onChange={(e) => setEditDraft(e.currentTarget.value)}
+                                        onBlur={(e) => {
+                                          const nextText = e.currentTarget.value;
+                                          if (connectionId && key && nextText !== editStart) {
+                                            const trimmed = nextText.trim();
+                                            setCell(connectionId, key, col.name, trimmed ? trimmed : null);
+                                          }
+                                          setEditing(null);
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                                          if (e.key === "Escape") {
+                                            setEditDraft(editStart);
+                                            setEditing(null);
+                                          }
+                                        }}
+                                      />
                                     ) : (
                                       <Input
                                         autoFocus
+                                        ref={editInputRef}
+                                        data-edit-input="1"
+                                        data-edit-wrapper="1"
                                         className="h-8"
-                                        type={kind === "number" ? "number" : kind === "date" ? "date" : kind === "time" ? "time" : kind === "datetime" ? "datetime-local" : "text"}
-                                        step={kind === "time" || kind === "datetime" ? 1 : undefined}
+                                        type={kind === "number" ? "number" : "text"}
                                         inputMode={kind === "number" ? "decimal" : undefined}
                                         value={editDraft}
-                                        onChange={(e) => setEditDraft(e.currentTarget.value)}
+                                        onChange={(e) => {
+                                          setEditDraft(e.currentTarget.value);
+                                        }}
                                         onBlur={(e) => {
                                           if (cancelingRef.current) {
                                             cancelingRef.current = false;
@@ -845,12 +1143,6 @@ export function ResultGrid() {
                                                 const n = Number(trimmed);
                                                 setCell(connectionId, key, col.name, Number.isFinite(n) ? n : trimmed);
                                               }
-                                            } else if (kind === "datetime") {
-                                              const trimmed = nextText.trim();
-                                              setCell(connectionId, key, col.name, trimmed ? trimmed.replace("T", " ") : null);
-                                            } else if (kind === "date" || kind === "time") {
-                                              const trimmed = nextText.trim();
-                                              setCell(connectionId, key, col.name, trimmed ? trimmed : null);
                                             } else {
                                               setCell(connectionId, key, col.name, parseInput(nextText));
                                             }

@@ -55,6 +55,31 @@ function emptyDirty(): DirtyState {
   return { inserts: [], updatesByKey: {}, deletesByKey: {}, selectedKeys: {} };
 }
 
+function jsonEqual(a: JsonValue, b: JsonValue): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return a === b;
+  if (typeof a !== typeof b) return false;
+  if (typeof a !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!jsonEqual(a[i] as JsonValue, b[i] as JsonValue)) return false;
+    }
+    return true;
+  }
+  const ao = a as Record<string, JsonValue>;
+  const bo = b as Record<string, JsonValue>;
+  const ak = Object.keys(ao);
+  const bk = Object.keys(bo);
+  if (ak.length !== bk.length) return false;
+  for (const k of ak) {
+    if (!(k in bo)) return false;
+    if (!jsonEqual(ao[k], bo[k])) return false;
+  }
+  return true;
+}
+
 export const useQueryStore = create<QueryState>((set, get) => ({
   runningById: {},
   errorById: {},
@@ -115,6 +140,41 @@ export const useQueryStore = create<QueryState>((set, get) => ({
     set((s) => {
       const dirty = s.dirtyById[connectionId] ?? emptyDirty();
       const existing = dirty.updatesByKey[ks] ?? {};
+      const result = s.resultById[connectionId] ?? null;
+      const pkCols = result?.editable?.primary_key_columns ?? [];
+      const columns = result?.columns ?? [];
+      const colIndexByName = Object.fromEntries(columns.map((c, i) => [c.name, i])) as Record<string, number>;
+      const colIndex = colIndexByName[column];
+      let originalValue: JsonValue | undefined = undefined;
+      if (result && typeof colIndex === "number" && pkCols.length > 0) {
+        const row = result.rows.find((r) => {
+          const rowKey = pkCols.map((c) => r[colIndexByName[c]] ?? null) as RowKey;
+          if (rowKey.length !== key.length) return false;
+          for (let i = 0; i < rowKey.length; i++) {
+            if (!jsonEqual((rowKey[i] ?? null) as JsonValue, (key[i] ?? null) as JsonValue)) return false;
+          }
+          return true;
+        });
+        if (row) originalValue = (row[colIndex] ?? null) as JsonValue;
+      }
+
+      if (originalValue !== undefined && jsonEqual(value, originalValue)) {
+        if (!Object.prototype.hasOwnProperty.call(existing, column)) return s;
+        const nextRow = { ...existing };
+        delete nextRow[column];
+        const nextUpdatesByKey = { ...dirty.updatesByKey };
+        if (Object.keys(nextRow).length === 0) delete nextUpdatesByKey[ks];
+        else nextUpdatesByKey[ks] = nextRow;
+        return {
+          dirtyById: {
+            ...s.dirtyById,
+            [connectionId]: {
+              ...dirty,
+              updatesByKey: nextUpdatesByKey,
+            },
+          },
+        };
+      }
       return {
         dirtyById: {
           ...s.dirtyById,
