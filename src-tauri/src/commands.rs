@@ -137,6 +137,35 @@ fn try_get_pg_string_or_raw(row: &PgRow, i: usize) -> Option<serde_json::Value> 
     String::from_utf8(bytes.to_vec()).ok().map(serde_json::Value::from)
 }
 
+/// Try to decode a jsonb/json column: first try direct Value, then Json wrapper, then String
+fn try_get_pg_json(row: &PgRow, i: usize) -> Option<serde_json::Value> {
+    // Try direct decode (works for json, may fail for jsonb)
+    if let Ok(Some(v)) = row.try_get::<Option<serde_json::Value>, _>(i) {
+        return Some(v);
+    }
+    // Try via Json<T> wrapper (works for jsonb)
+    use sqlx::types::Json;
+    if let Ok(Some(Json(v))) = row.try_get::<Option<Json<serde_json::Value>>, _>(i) {
+        return Some(v);
+    }
+    // Fallback to string
+    try_get_pg_string(row, i).map(serde_json::Value::from)
+}
+
+/// Try to decode an int column: try i64, then i32, then String
+fn try_get_pg_int(row: &PgRow, i: usize) -> Option<serde_json::Value> {
+    if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
+        return Some(int_to_json(v));
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<i32>, _>(i) {
+        return Some(int_to_json(v as i64));
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<i16>, _>(i) {
+        return Some(int_to_json(v as i64));
+    }
+    try_get_pg_string(row, i).map(serde_json::Value::from)
+}
+
 fn try_get_mysql_string(row: &MySqlRow, i: usize) -> Option<String> {
     row.try_get::<Option<String>, _>(i).ok().flatten()
 }
@@ -363,13 +392,8 @@ fn row_to_json_typed_pg(
         let type_name = col.data_type.to_lowercase();
         let v = match type_name.as_str() {
             t if is_int_type(t) => {
-                if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(i) {
-                    int_to_json(v)
-                } else if let Some(s) = try_get_pg_string(row, i) {
-                    serde_json::Value::from(s)
-                } else {
-                    serde_json::Value::Null
-                }
+                try_get_pg_int(row, i)
+                    .unwrap_or(serde_json::Value::Null)
             }
             t if is_float_type(t) => {
                 if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(i) {
@@ -389,10 +413,7 @@ fn row_to_json_typed_pg(
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_json_type(t) => {
-                row.try_get::<Option<serde_json::Value>, _>(i)
-                    .ok()
-                    .flatten()
-                    .or_else(|| try_get_pg_string(row, i).map(serde_json::Value::from))
+                try_get_pg_json(row, i)
                     .unwrap_or(serde_json::Value::Null)
             }
             t if is_uuid_type(t) => {
