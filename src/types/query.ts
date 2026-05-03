@@ -3,6 +3,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [k: s
 export type ColumnInfo = {
   name: string;
   data_type: string;
+  enum_values?: string[];
 };
 
 export type EditableResultInfo = {

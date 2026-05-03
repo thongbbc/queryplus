@@ -38,6 +38,56 @@ function parseInput(s: string): JsonValue {
   return s;
 }
 
+type EditKind = "text" | "number" | "boolean" | "date" | "time" | "datetime" | "enum";
+
+function inferEditKind(dataType: string, enumValues?: string[]): EditKind {
+  if (enumValues && enumValues.length > 0) return "enum";
+  const t = dataType.toLowerCase();
+  if (t.includes("bool")) return "boolean";
+  if (t === "date") return "date";
+  if (t === "time" || t.includes("time without time zone")) return "time";
+  if (t.includes("timestamp") || t.includes("datetime")) return "datetime";
+  if (
+    t.includes("int") ||
+    t.includes("serial") ||
+    t.includes("float") ||
+    t.includes("double") ||
+    t.includes("decimal") ||
+    t.includes("numeric") ||
+    t === "real"
+  )
+    return "number";
+  return "text";
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function currentDateString(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function currentTimeString(): string {
+  const d = new Date();
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function currentDateTimeString(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function toInputDateTimeValue(s: string): string {
+  const trimmed = s.trim();
+  if (!trimmed) return "";
+  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  if (normalized.length >= 19) return normalized.slice(0, 19);
+  if (normalized.length >= 16) return normalized.slice(0, 16);
+  return normalized;
+}
+
 type GridColumn =
   | { key: "__select__"; kind: "select"; width: number }
   | {
@@ -45,6 +95,7 @@ type GridColumn =
       kind: "data";
       name: string;
       dataType: string;
+      enumValues?: string[];
       width: number;
       colIndex: number;
     };
@@ -96,12 +147,50 @@ export function ResultGrid() {
   const [editDraft, setEditDraft] = useState("");
   const [editStart, setEditStart] = useState("");
   const [saving, setSaving] = useState(false);
+  const [cellMenu, setCellMenu] = useState<null | { x: number; y: number; kind: EditKind; key: RowKey; col: string }>(null);
+  const [valueMenu, setValueMenu] = useState<null | { x: number; y: number; kind: "enum" | "boolean"; key: RowKey; col: string; options: string[] }>(null);
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const hScrollRef = useRef<HTMLDivElement | null>(null);
   const vScrollRef = useRef<HTMLDivElement | null>(null);
   const syncRef = useRef<null | "main" | "h" | "v">(null);
   const cancelingRef = useRef(false);
+
+  useEffect(() => {
+    if (!cellMenu) return;
+    function onDown() {
+      setCellMenu(null);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setCellMenu(null);
+    }
+    window.addEventListener("mousedown", onDown, true);
+    window.addEventListener("scroll", onDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("scroll", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [cellMenu]);
+
+  useEffect(() => {
+    if (!valueMenu) return;
+    function onDown() {
+      setValueMenu(null);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setValueMenu(null);
+    }
+    window.addEventListener("mousedown", onDown, true);
+    window.addEventListener("scroll", onDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("scroll", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [valueMenu]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
@@ -173,6 +262,7 @@ export function ResultGrid() {
       kind: "data",
       name: c.name,
       dataType: c.data_type,
+      enumValues: c.enum_values,
       width: 220,
       colIndex: idx,
     }));
@@ -253,9 +343,9 @@ export function ResultGrid() {
             <span className="rounded-md border border-white/10 bg-white/5 px-2 py-1">
               Rows returned: {result?.row_count ?? 0}
             </span>
-            <span className="rounded-md border border-white/10 bg-white/5 px-2 py-1">
+            {/* <span className="rounded-md border border-white/10 bg-white/5 px-2 py-1">
               Total records: {result?.total_records ?? "—"}
-            </span>
+            </span> */}
           </div>
         </div>
 
@@ -295,6 +385,107 @@ export function ResultGrid() {
                 </svg>
                 Cancel Query
               </button>
+            </div>
+          </div>
+        ) : null}
+
+        {cellMenu ? (
+          <div
+            className="fixed z-50 min-w-[180px] overflow-hidden rounded-lg border border-white/10 bg-[#0f0f14] shadow-2xl"
+            style={{ left: cellMenu.x, top: cellMenu.y }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <button
+              className="w-full px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/5"
+              onClick={() => {
+                if (!connectionId) return;
+                setCell(connectionId, cellMenu.key, cellMenu.col, null);
+                setEditing(null);
+                setCellMenu(null);
+              }}
+            >
+              Set NULL
+            </button>
+            {cellMenu.kind === "time" ? (
+              <button
+                className="w-full px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/5"
+                onClick={() => {
+                  if (!connectionId) return;
+                  setCell(connectionId, cellMenu.key, cellMenu.col, currentTimeString());
+                  setEditing(null);
+                  setCellMenu(null);
+                }}
+              >
+                Set current time
+              </button>
+            ) : null}
+            {cellMenu.kind === "date" ? (
+              <button
+                className="w-full px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/5"
+                onClick={() => {
+                  if (!connectionId) return;
+                  setCell(connectionId, cellMenu.key, cellMenu.col, currentDateString());
+                  setEditing(null);
+                  setCellMenu(null);
+                }}
+              >
+                Set current date
+              </button>
+            ) : null}
+            {cellMenu.kind === "datetime" ? (
+              <button
+                className="w-full px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/5"
+                onClick={() => {
+                  if (!connectionId) return;
+                  setCell(connectionId, cellMenu.key, cellMenu.col, currentDateTimeString());
+                  setEditing(null);
+                  setCellMenu(null);
+                }}
+              >
+                Set current datetime
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {valueMenu ? (
+          <div
+            className="fixed z-50 w-[240px] overflow-hidden rounded-lg border border-white/10 bg-[#0f0f14] shadow-2xl"
+            style={{ left: valueMenu.x, top: valueMenu.y }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="result-scrollbar max-h-56 overflow-y-auto">
+              <button
+                className="w-full px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/5"
+                onClick={() => {
+                  if (!connectionId) return;
+                  setCell(connectionId, valueMenu.key, valueMenu.col, null);
+                  setEditing(null);
+                  setValueMenu(null);
+                }}
+              >
+                NULL
+              </button>
+              {valueMenu.options.map((opt) => (
+                <button
+                  key={opt}
+                  className="w-full px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/5"
+                  onClick={() => {
+                    if (!connectionId) return;
+                    if (valueMenu.kind === "boolean") {
+                      if (opt === "true") setCell(connectionId, valueMenu.key, valueMenu.col, true);
+                      else if (opt === "false") setCell(connectionId, valueMenu.key, valueMenu.col, false);
+                      else setCell(connectionId, valueMenu.key, valueMenu.col, null);
+                    } else {
+                      setCell(connectionId, valueMenu.key, valueMenu.col, opt);
+                    }
+                    setEditing(null);
+                    setValueMenu(null);
+                  }}
+                >
+                  {opt}
+                </button>
+              ))}
             </div>
           </div>
         ) : null}
@@ -528,20 +719,27 @@ export function ResultGrid() {
                                   dirtyRow,
                                   col.name,
                                 );
+                              const isDirtyCell = hasDirtyCol && !isDeleted;
                               const rawValue =
                                 (hasDirtyCol
                                   ? dirtyRow?.[col.name]
                                   : row?.[col.colIndex]) ?? null;
                               const display = toDisplay(rawValue);
-                              const initialText =
+                              const kind = inferEditKind(col.dataType, col.enumValues);
+                              const baseText =
                                 rawValue === null
                                   ? ""
                                   : typeof rawValue === "string"
                                     ? rawValue
-                                    : typeof rawValue === "number" ||
-                                        typeof rawValue === "boolean"
+                                    : typeof rawValue === "number" || typeof rawValue === "boolean"
                                       ? String(rawValue)
                                       : JSON.stringify(rawValue);
+                              const initialText =
+                                kind === "datetime"
+                                  ? toInputDateTimeValue(baseText)
+                                  : kind === "date"
+                                    ? baseText.trim().slice(0, 10)
+                                    : baseText;
 
                               return (
                                 <div
@@ -559,49 +757,115 @@ export function ResultGrid() {
                                     "px-3",
                                     isPk && "text-zinc-300",
                                     canEditCell && "cursor-text",
+                                    isDirtyCell && "rounded-md bg-sky-500/12 ring-1 ring-sky-400/40",
                                   )}
+                                  onClick={(e) => {
+                                    if (!canEditCell || !cellKey || !key) return;
+                                    if (kind === "enum" || kind === "boolean") {
+                                      const r = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+                                      setEditing(cellKey);
+                                      setEditDraft(initialText);
+                                      setEditStart(initialText);
+                                      setValueMenu({
+                                        x: Math.max(8, Math.min(window.innerWidth - 260, Math.round(r.left))),
+                                        y: Math.max(8, Math.min(window.innerHeight - 260, Math.round(r.bottom + 6))),
+                                        kind,
+                                        key,
+                                        col: col.name,
+                                        options: kind === "boolean" ? ["true", "false"] : (col.enumValues ?? []),
+                                      });
+                                      return;
+                                    }
+                                    if (kind === "date" || kind === "time" || kind === "datetime") {
+                                      setEditing(cellKey);
+                                      setEditDraft(initialText);
+                                      setEditStart(initialText);
+                                    }
+                                  }}
                                   onDoubleClick={() => {
                                     if (!canEditCell || !cellKey) return;
                                     setEditing(cellKey);
                                     setEditDraft(initialText);
                                     setEditStart(initialText);
                                   }}
+                                  onContextMenu={(e) => {
+                                    if (!canEditCell || !cellKey || !key) return;
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setEditing(cellKey);
+                                    setEditDraft(initialText);
+                                    setEditStart(initialText);
+                                    setCellMenu({ x: e.clientX, y: e.clientY, kind, key, col: col.name });
+                                  }}
                                 >
                                   {isEditing && canEditCell && key ? (
-                                    <Input
-                                      autoFocus
-                                      className="h-8"
-                                      value={editDraft}
-                                      onChange={(e) =>
-                                        setEditDraft(e.currentTarget.value)
-                                      }
-                                      onBlur={(e) => {
-                                        if (cancelingRef.current) {
-                                          cancelingRef.current = false;
-                                          setEditing(null);
-                                          return;
-                                        }
-                                        const nextText = e.currentTarget.value;
-                                        if (nextText !== editStart)
-                                          setCell(
-                                            connectionId,
+                                    kind === "enum" || kind === "boolean" ? (
+                                      <button
+                                        className="flex h-8 w-full items-center justify-between rounded-md border border-zinc-300/70 bg-white px-2 text-sm text-black focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                                          setValueMenu({
+                                            x: Math.max(8, Math.min(window.innerWidth - 260, Math.round(r.left))),
+                                            y: Math.max(8, Math.min(window.innerHeight - 260, Math.round(r.bottom + 6))),
+                                            kind,
                                             key,
-                                            col.name,
-                                            parseInput(nextText),
-                                          );
-                                        setEditing(null);
-                                      }}
-                                      onKeyDown={(e) => {
-                                        if (e.key === "Enter")
-                                          (
-                                            e.currentTarget as HTMLInputElement
-                                          ).blur();
-                                        if (e.key === "Escape") {
-                                          setEditDraft(editStart);
+                                            col: col.name,
+                                            options: kind === "boolean" ? ["true", "false"] : (col.enumValues ?? []),
+                                          });
+                                        }}
+                                      >
+                                        <span className={clsx("min-w-0 flex-1 truncate text-left", !editDraft && "text-zinc-500")}>
+                                          {editDraft || "Select…"}
+                                        </span>
+                                        <span className="ml-2 text-zinc-400">▾</span>
+                                      </button>
+                                    ) : (
+                                      <Input
+                                        autoFocus
+                                        className="h-8"
+                                        type={kind === "number" ? "number" : kind === "date" ? "date" : kind === "time" ? "time" : kind === "datetime" ? "datetime-local" : "text"}
+                                        step={kind === "time" || kind === "datetime" ? 1 : undefined}
+                                        inputMode={kind === "number" ? "decimal" : undefined}
+                                        value={editDraft}
+                                        onChange={(e) => setEditDraft(e.currentTarget.value)}
+                                        onBlur={(e) => {
+                                          if (cancelingRef.current) {
+                                            cancelingRef.current = false;
+                                            setEditing(null);
+                                            return;
+                                          }
+                                          const nextText = e.currentTarget.value;
+                                          if (nextText !== editStart) {
+                                            if (kind === "number") {
+                                              const trimmed = nextText.trim();
+                                              if (!trimmed) setCell(connectionId, key, col.name, null);
+                                              else {
+                                                const n = Number(trimmed);
+                                                setCell(connectionId, key, col.name, Number.isFinite(n) ? n : trimmed);
+                                              }
+                                            } else if (kind === "datetime") {
+                                              const trimmed = nextText.trim();
+                                              setCell(connectionId, key, col.name, trimmed ? trimmed.replace("T", " ") : null);
+                                            } else if (kind === "date" || kind === "time") {
+                                              const trimmed = nextText.trim();
+                                              setCell(connectionId, key, col.name, trimmed ? trimmed : null);
+                                            } else {
+                                              setCell(connectionId, key, col.name, parseInput(nextText));
+                                            }
+                                          }
                                           setEditing(null);
-                                        }
-                                      }}
-                                    />
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                                          if (e.key === "Escape") {
+                                            setEditDraft(editStart);
+                                            setEditing(null);
+                                          }
+                                        }}
+                                      />
+                                    )
                                   ) : (
                                     <div
                                       className={clsx(

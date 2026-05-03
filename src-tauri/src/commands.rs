@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{atomic::Ordering, Arc};
 
 use tauri::State;
@@ -355,6 +356,85 @@ fn row_to_json_typed_mysql(
     out
 }
 
+async fn pg_enum_values(pool: &sqlx::PgPool, schema: &str, table: &str) -> Result<HashMap<String, Vec<String>>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT c.column_name, e.enumlabel
+         FROM information_schema.columns c
+         JOIN pg_type t ON t.typname = c.udt_name
+         JOIN pg_enum e ON e.enumtypid = t.oid
+         WHERE c.table_schema = $1 AND c.table_name = $2 AND c.data_type = 'USER-DEFINED'
+         ORDER BY c.column_name, e.enumsortorder",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await?;
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for (col, label) in rows {
+        out.entry(col).or_default().push(label);
+    }
+    Ok(out)
+}
+
+fn parse_mysql_enum_values(column_type: &str) -> Vec<String> {
+    let s = column_type.trim();
+    let lower = s.to_ascii_lowercase();
+    if !lower.starts_with("enum(") || !s.ends_with(')') {
+        return Vec::new();
+    }
+    let inner = &s[5..s.len() - 1];
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_str = false;
+    let mut esc = false;
+    for ch in inner.chars() {
+        if !in_str {
+            if ch == '\'' {
+                in_str = true;
+                cur.clear();
+            }
+            continue;
+        }
+        if esc {
+            cur.push(ch);
+            esc = false;
+            continue;
+        }
+        if ch == '\\' {
+            esc = true;
+            continue;
+        }
+        if ch == '\'' {
+            out.push(cur.clone());
+            in_str = false;
+            continue;
+        }
+        cur.push(ch);
+    }
+    out
+}
+
+async fn mysql_enum_values(pool: &sqlx::MySqlPool, database: &str, table: &str) -> Result<HashMap<String, Vec<String>>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT COLUMN_NAME, COLUMN_TYPE
+         FROM information_schema.columns
+         WHERE table_schema = ? AND table_name = ? AND DATA_TYPE = 'enum'
+         ORDER BY ORDINAL_POSITION",
+    )
+    .bind(database)
+    .bind(table)
+    .fetch_all(pool)
+    .await?;
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for (col, column_type) in rows {
+        let vals = parse_mysql_enum_values(&column_type);
+        if !vals.is_empty() {
+            out.insert(col, vals);
+        }
+    }
+    Ok(out)
+}
+
 /// Set the cancel flag for a connection. execute_query checks this and returns early.
 /// Also runs pg_cancel_backend / KILL QUERY on the database server.
 #[tauri::command]
@@ -416,7 +496,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
 
     let pool = state.pools.get(&connection_id).ok_or("Not connected")?;
     let result = match pool {
-        DbPool::Postgres(_) => {
+        DbPool::Postgres(p) => {
             if meta.is_select {
                 let rows = run_pg_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
@@ -433,12 +513,13 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     }
                 })
                 .await?;
-                let columns_info: Vec<ColumnInfo> = if let Some(r0) = rows.get(0) {
+                let mut columns_info: Vec<ColumnInfo> = if let Some(r0) = rows.get(0) {
                     r0.columns()
                         .iter()
                         .map(|c| ColumnInfo {
                             name: c.name().to_string(),
                             data_type: sqlx::TypeInfo::name(c.type_info()).to_string(),
+                            enum_values: None,
                         })
                         .collect()
                 } else {
@@ -470,6 +551,18 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                 })
                 .await?;
 
+                if editable.enabled {
+                    if let (Some(schema), Some(table)) = (editable.schema.as_deref(), editable.table.as_deref()) {
+                        if let Ok(map) = pg_enum_values(&p, schema, table).await {
+                            for c in &mut columns_info {
+                                if let Some(v) = map.get(&c.name) {
+                                    c.enum_values = Some(v.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
                 QueryResult {
                     columns: columns_info,
                     rows: rows_json,
@@ -498,7 +591,7 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                 }
             }
         }
-        DbPool::Mysql(_) => {
+        DbPool::Mysql(p) => {
             if meta.is_select {
                 let rows = run_mysql_with_retries(&state, &config, cancel_flag.clone(), |p| {
                     let q = query.clone();
@@ -515,12 +608,13 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     }
                 })
                 .await?;
-                let columns_info: Vec<ColumnInfo> = if let Some(r0) = rows.get(0) {
+                let mut columns_info: Vec<ColumnInfo> = if let Some(r0) = rows.get(0) {
                     r0.columns()
                         .iter()
                         .map(|c| ColumnInfo {
                             name: c.name().to_string(),
                             data_type: sqlx::TypeInfo::name(c.type_info()).to_string(),
+                            enum_values: None,
                         })
                         .collect()
                 } else {
@@ -551,6 +645,19 @@ pub async fn execute_query(state: State<'_, AppState>, connection_id: String, qu
                     async move { Ok(compute_editability_mysql(&p, config_ref, meta_ref, columns_ref).await) }
                 })
                 .await?;
+
+                if editable.enabled {
+                    let db = editable.schema.clone().unwrap_or_else(|| editable.database.clone());
+                    if let Some(table) = editable.table.as_deref() {
+                        if let Ok(map) = mysql_enum_values(&p, &db, table).await {
+                            for c in &mut columns_info {
+                                if let Some(v) = map.get(&c.name) {
+                                    c.enum_values = Some(v.clone());
+                                }
+                            }
+                        }
+                    }
+                }
 
                 QueryResult {
                     columns: columns_info,
